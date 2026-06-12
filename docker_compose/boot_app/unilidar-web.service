@@ -1,0 +1,17 @@
+[Unit]
+Description=UniLidar Remote Web Server
+After=network-online.target docker.service
+Wants=network-online.target docker.service
+
+[Service]
+Type=simple
+User=cat
+WorkingDirectory=/home/cat/work/unilidar_sdk2_bazel
+Environment=UNILIDAR_WEB_HOST=0.0.0.0
+Environment=UNILIDAR_WEB_PORT=8080
+ExecStart=/usr/bin/python3 /home/cat/work/unilidar_sdk2_bazel/docker_compose/unilidar_mapping/webserver.py
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target

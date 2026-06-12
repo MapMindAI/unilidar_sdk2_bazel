@@ -110,6 +110,8 @@ Files:
 
 - `docker_compose/unilidar_mapping/webserver.py`
 - `docker_compose/unilidar_mapping/start_webserver.sh`
+- `docker_compose/unilidar_mapping/unilidar-web.service`
+- `docker_compose/boot_app/enable_unilidar_web_boot.sh`
 
 What it does:
 
@@ -149,3 +151,24 @@ Notes:
 - the webserver uses only Python standard library modules
 - it expects `docker` and `docker compose` to be installed on the target device
 - it currently has no authentication, so expose it only on a trusted network or behind a reverse proxy/VPN
+
+### Enable At Boot
+
+This repo includes a `systemd` service file and an installer script for the target device.
+
+Install and enable the webserver on boot:
+
+```bash
+cd /home/cat/work/unilidar_sdk2_bazel
+sudo bash docker_compose/boot_app/enable_unilidar_web_boot.sh
+```
+
+This installs:
+
+- `docker_compose/unilidar_mapping/unilidar-web.service` to `/etc/systemd/system/unilidar-web.service`
+
+Then it runs:
+
+- `systemctl daemon-reload`
+- `systemctl enable unilidar-web.service`
+- `systemctl restart unilidar-web.service`
