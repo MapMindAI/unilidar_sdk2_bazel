@@ -5,6 +5,7 @@ This directory contains:
 - the vendor SDK headers and prebuilt libraries under `include/` and `lib/`
 - example programs under `examples/`
 - a ROS 2 bridge node in [unitree_lidar_rosnode.cc](/unitree_lidar_rosnode.cc)
+- a lightweight remote control webserver in `docker_compose/unilidar_mapping/webserver.py`
 
 ## `unitree_lidar_rosnode`
 
@@ -100,3 +101,51 @@ Important flags for this node:
 - `--reset_lidar_mode`
 
 The node logs the effective values of these flags at startup.
+
+## Remote Web Control
+
+This repo now includes a small Python webserver for remote control of the UniLidar Docker stack.
+
+Files:
+
+- `docker_compose/unilidar_mapping/webserver.py`
+- `docker_compose/unilidar_mapping/start_webserver.sh`
+
+What it does:
+
+- runs `docker_compose/unilidar_mapping/arm64_start_unilidar.sh`
+- runs `docker_compose/unilidar_mapping/arm64_stop_unilidar.sh`
+- shows the latest Docker logs from container `UniLidarSdk`
+
+Run it on the remote device:
+
+```bash
+cd /home/cat/work/unilidar_sdk2_bazel
+python3 docker_compose/unilidar_mapping/webserver.py
+```
+
+or:
+
+```bash
+cd /home/cat/work/unilidar_sdk2_bazel
+bash docker_compose/unilidar_mapping/start_webserver.sh
+```
+
+Then open:
+
+```text
+http://<device-ip>:8080
+```
+
+Optional environment variables:
+
+- `UNILIDAR_WEB_HOST` default `0.0.0.0`
+- `UNILIDAR_WEB_PORT` default `8080`
+- `UNILIDAR_COMPOSE_NAME` default `unilidar_collection`
+- `UNILIDAR_CONTAINER_NAME` default `UniLidarSdk`
+
+Notes:
+
+- the webserver uses only Python standard library modules
+- it expects `docker` and `docker compose` to be installed on the target device
+- it currently has no authentication, so expose it only on a trusted network or behind a reverse proxy/VPN
