@@ -6,8 +6,7 @@ services:
     privileged: true
     volumes:
       - /dev:/dev
-      - /home/cat/work/unilidar_sdk2_bazel:/unilidar_sdk2_bazel
-      - /home/cat/work_from_image:/work
+      - ~/work/unilidar_sdk2_bazel:/unilidar_sdk2_bazel
     working_dir: /unilidar_sdk2_bazel
     command:
       - bash
@@ -21,7 +20,7 @@ services:
         done
         source /opt/ros/humble/setup.bash
         export LD_LIBRARY_PATH="/opt/ros/humble/lib:/opt/ros/humble/lib/x86_64-linux-gnu:${LD_LIBRARY_PATH:-}"
-        exec /work/third_party/unitree_lidar_sdk/unitree_lidar_rosnode
+        exec /unilidar_sdk2_bazel/unitree_lidar_sdk/unitree_lidar_rosnode
 
   recorder:
     image: yeliudm/arm64-ros2humble-opencv4.8.1:latest
@@ -30,7 +29,7 @@ services:
     privileged: true
     volumes:
       - /dev:/dev
-      - /home/cat/work/unilidar_sdk2_bazel:/unilidar_sdk2_bazel
+      - ~/work/unilidar_sdk2_bazel:/unilidar_sdk2_bazel
     working_dir: /unilidar_sdk2_bazel
     command:
       - bash
