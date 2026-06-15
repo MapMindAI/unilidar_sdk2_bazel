@@ -1,0 +1,49 @@
+services:
+  unilidar_sdk:
+    image: yeliudm/arm64-ros2humble-opencv4.8.1:latest
+    platform: linux/arm64
+    container_name: UniLidarSdk
+    privileged: true
+    volumes:
+      - /dev:/dev
+      - ~/work/unilidar_sdk2_bazel:/unilidar_sdk2_bazel
+    working_dir: /unilidar_sdk2_bazel
+    command:
+      - bash
+      - -lc
+      - |
+        echo '====> Starting UniLidarSdk'
+        MIN_VALID_UNIX_TIME=1735689600
+        while [ "$(date +%s)" -lt "$${MIN_VALID_UNIX_TIME}" ]; do
+          echo "Waiting for valid system time before starting UniLidarSdk: $(date -Is)"
+          sleep 1
+        done
+        source /opt/ros/humble/setup.bash
+        export LD_LIBRARY_PATH="/opt/ros/humble/lib:/opt/ros/humble/lib/x86_64-linux-gnu:${LD_LIBRARY_PATH:-}"
+        exec /unilidar_sdk2_bazel/docker_compose/unitree_lidar_sdk/unitree_lidar_rosnode
+
+  recorder:
+    image: yeliudm/arm64-ros2humble-opencv4.8.1:latest
+    platform: linux/arm64
+    container_name: Recorder
+    privileged: true
+    volumes:
+      - /dev:/dev
+      - ~/work/unilidar_sdk2_bazel:/unilidar_sdk2_bazel
+    working_dir: /unilidar_sdk2_bazel
+    command:
+      - bash
+      - -lc
+      - |
+        echo '====> Starting Recorder'
+        MIN_VALID_UNIX_TIME=1735689600
+        while [ "$(date +%s)" -lt "$${MIN_VALID_UNIX_TIME}" ]; do
+          echo "Waiting for valid system time before starting Recorder: $(date -Is)"
+          sleep 1
+        done
+        source /opt/ros/humble/setup.bash
+        export LD_LIBRARY_PATH="/opt/ros/humble/lib:/opt/ros/humble/lib/x86_64-linux-gnu:${LD_LIBRARY_PATH:-}"
+        mkdir -p '/unilidar_sdk2_bazel/data/rosbags'
+        BAG_NAME="unilidar_record_$(date +%Y%m%d_%H%M%S)"
+        echo "Save to $${BAG_NAME}"
+        exec ros2 bag record -o "/unilidar_sdk2_bazel/data/rosbags/$${BAG_NAME}" /unilidar/imu /unilidar/cloud
