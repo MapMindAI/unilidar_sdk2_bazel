@@ -20,7 +20,7 @@ services:
         done
         source /opt/ros/humble/setup.bash
         export LD_LIBRARY_PATH="/opt/ros/humble/lib:/opt/ros/humble/lib/x86_64-linux-gnu:${LD_LIBRARY_PATH:-}"
-        exec /unilidar_sdk2_bazel/unitree_lidar_sdk/unitree_lidar_rosnode
+        exec /unilidar_sdk2_bazel/docker_compose/unitree_lidar_sdk/unitree_lidar_rosnode
 
   recorder:
     image: yeliudm/arm64-ros2humble-opencv4.8.1:latest
