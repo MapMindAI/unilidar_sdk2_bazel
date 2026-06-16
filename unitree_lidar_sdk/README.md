@@ -53,7 +53,7 @@ The recorder stores the raw vendor packet bytes for each `LidarPointDataPacket`,
 Example:
 
 ```bash
-bazel-bin/third_party/unitree_lidar_sdk/unitree_lidar_packet_recorder \
+bazel-bin/unitree_lidar_sdk/unitree_lidar_packet_recorder \
   --serial_port=/dev/ttyACM0 \
   --output_path=data/unitree_lidar_packets.bin \
   --max_packets=1000
@@ -75,7 +75,7 @@ The replayer loads the recorded packet file, decodes each packet with the same g
 Example:
 
 ```bash
-bazel-bin/third_party/unitree_lidar_sdk/unitree_lidar_packet_replayer \
+bazel-bin/unitree_lidar_sdk/unitree_lidar_packet_replayer \
   --input_path=data/unitree_lidar_packets.bin \
   --accumulate_rings=50
 ```

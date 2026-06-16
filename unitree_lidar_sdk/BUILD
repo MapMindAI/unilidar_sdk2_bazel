@@ -3,7 +3,7 @@ package(default_visibility = ["//visibility:public"])
 cc_import(
     name = "unilidar_sdk2_archive",
     static_library = select({
-        "@bazel_platforms//platforms:linux_arm64": "lib/aarch64/libunilidar_sdk2.a",
+        "//:linux_arm64": "lib/aarch64/libunilidar_sdk2.a",
         "//conditions:default": "lib/x86_64/libunilidar_sdk2.a",
     }),
 )
@@ -62,8 +62,8 @@ cc_binary(
     srcs = ["unitree_lidar_rosnode.cc"],
     deps = [
         ":unilidar_sdk2",
-        "@com_github_gflags_gflags//:gflags",
-        "@com_github_glog//:glog",
+        "@system_gflags//:gflags",
+        "@system_glog//:glog",
         "@ros_humble//:ros_humble",
     ],
 )
@@ -75,9 +75,8 @@ cc_binary(
     deps = [
         ":raw_packet_file",
         ":unilidar_sdk2",
-        "@com_github_gflags_gflags//:gflags",
-        "@dm_core_cpp//common/base:glog",
-        "@dm_core_cpp//common/file:file",
+        "@system_gflags//:gflags",
+        "@system_glog//:glog",
     ],
 )
 
@@ -87,9 +86,9 @@ cc_binary(
     deps = [
         ":raw_packet_file",
         ":unilidar_sdk2",
-        "@com_github_gflags_gflags//:gflags",
-        "@dm_core_cpp//common/base:glog",
-        "@eigen",
+        "@system_gflags//:gflags",
+        "@system_glog//:glog",
+        "@eigen//:eigen",
         "@pangolin//:pangolin",
     ],
 )

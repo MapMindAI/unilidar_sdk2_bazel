@@ -6,12 +6,13 @@
 #include <cstdint>
 #include <csignal>
 #include <cstring>
+#include <filesystem>
+#include <fstream>
 #include <memory>
 #include <string>
 
-#include "common/base/glog.h"
-#include "common/file/file.h"
 #include "gflags/gflags.h"
+#include <glog/logging.h>
 #include "unitree_lidar_sdk/raw_packet_file.h"
 #include "unitree_lidar_sdk/include/unitree_lidar_protocol.h"
 #include "unitree_lidar_sdk/include/unitree_lidar_sdk.h"
@@ -34,22 +35,30 @@ void HandleSignal(int /*signum*/) { g_stop_requested.store(true); }
 
 int64_t GetSystemTimestampNs() { return static_cast<int64_t>(unilidar_sdk2::getSystemTimeStamp() * 1e9); }
 
-void WriteAll(dm::file::File* file, const void* data, size_t size) {
+void WriteAll(std::ofstream* file, const void* data, size_t size) {
   CHECK(file != nullptr);
   CHECK(data != nullptr);
   const auto* bytes = reinterpret_cast<const char*>(data);
-  CHECK_EQ(file->Write(bytes, size), size);
+  file->write(bytes, static_cast<std::streamsize>(size));
+  CHECK(file->good()) << "Failed to write " << size << " bytes.";
 }
 
 }  // namespace
 
 int Run(int argc, char** argv) {
-  DM_InitGoogleLogging(argc, argv);
+  google::InitGoogleLogging(argv[0]);
+  gflags::ParseCommandLineFlags(&argc, &argv, true);
   std::signal(SIGINT, HandleSignal);
   std::signal(SIGTERM, HandleSignal);
 
   CHECK(!FLAGS_output_path.empty()) << "output_path is required.";
-  CHECK_OK(dm::file::CheckAndCreateParent(FLAGS_output_path));
+  const std::filesystem::path output_path(FLAGS_output_path);
+  if (output_path.has_parent_path()) {
+    std::error_code ec;
+    std::filesystem::create_directories(output_path.parent_path(), ec);
+    CHECK(!ec) << "Failed to create parent directory for " << FLAGS_output_path << ": "
+               << ec.message();
+  }
 
   std::unique_ptr<unilidar_sdk2::UnitreeLidarReader> lidar_reader(
       unilidar_sdk2::createUnitreeLidarReader());
@@ -62,15 +71,14 @@ int Run(int argc, char** argv) {
   CHECK_EQ(init_status, 0) << "Failed to initialize Unitree lidar serial on "
                            << FLAGS_serial_port;
 
-  auto file = dm::file::File::Create(FLAGS_output_path, "wb");
-  CHECK_OK(file.status());
-  auto out = std::move(file.value());
+  std::ofstream out(FLAGS_output_path, std::ios::binary | std::ios::trunc);
+  CHECK(out.is_open()) << "Failed to open output file: " << FLAGS_output_path;
 
   RawPacketFileHeader file_header{};
   std::memcpy(file_header.magic, kRawPacketFileMagic, sizeof(file_header.magic));
   file_header.version = kRawPacketFileVersion;
   file_header.packet_size_bytes = sizeof(unilidar_sdk2::LidarPointDataPacket);
-  WriteAll(out.get(), &file_header, sizeof(file_header));
+  WriteAll(&out, &file_header, sizeof(file_header));
 
   lidar_reader->startLidarRotation();
   ::sleep(1);
@@ -94,8 +102,8 @@ int Run(int argc, char** argv) {
     record_header.sequence = packet.data.info.seq;
     record_header.packet_size_bytes = sizeof(packet);
 
-    WriteAll(out.get(), &record_header, sizeof(record_header));
-    WriteAll(out.get(), &packet, sizeof(packet));
+    WriteAll(&out, &record_header, sizeof(record_header));
+    WriteAll(&out, &packet, sizeof(packet));
     ++recorded_packets;
 
     LOG_EVERY_N(INFO, 50) << "Recorded " << recorded_packets

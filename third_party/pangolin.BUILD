@@ -1,7 +1,7 @@
 cc_library(
     name = "pangolin",
     srcs = select({
-        "//platforms:linux_arm64": glob(["aarch64-linux-gnu/lib/libpango*.so"]),
+        "@//:linux_arm64": glob(["lib/aarch64-linux-gnu/libpango*.so*"]),
         "//conditions:default": glob(["lib/libpango*.so"]),
     }),
     hdrs = glob([
@@ -17,6 +17,7 @@ cc_library(
     linkopts = [
         "-lGL",
         "-lGLEW",
+        "-Wl,-rpath,/usr/local/lib",
     ],
     linkstatic = 1,
     visibility = ["//visibility:public"],

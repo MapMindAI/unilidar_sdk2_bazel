@@ -9,8 +9,8 @@ cc_library(
         "include/*.hpp",
     ]),
     srcs = select({
-        "@dm_bazel_platforms//platforms:linux_arm64": glob(["aarch64/*.so*"]),
-        "//conditions:default": glob(["lib/*.so*"]),
+        "@//:linux_arm64": glob(["lib/aarch64-linux-gnu/*.so*"]) + glob(["lib/*.so*"]),
+        "//conditions:default": glob(["lib/*.so*"]) + glob(["lib/x86_64-linux-gnu/*.so*"]),
     }),
     includes = [
         "include/",
@@ -37,5 +37,9 @@ cc_library(
         "include/nav_msgs",
         "include/rosidl_typesupport_introspection_cpp",
         "include/tf2_msgs",
+    ],
+    linkopts = [
+        "-Wl,-rpath,/opt/ros/humble/lib",
+        "-Wl,-rpath,/opt/ros/humble/lib/x86_64-linux-gnu",
     ],
 )

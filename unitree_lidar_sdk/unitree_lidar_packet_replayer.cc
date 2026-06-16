@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <array>
 #include <chrono>
+#include <cmath>
 #include <cstdint>
 #include <cstring>
 #include <fstream>
@@ -11,9 +12,9 @@
 #include <vector>
 
 #include <Eigen/Core>
+#include <glog/logging.h>
 #include <pangolin/pangolin.h>
 
-#include "common/base/glog.h"
 #include "gflags/gflags.h"
 #include "unitree_lidar_sdk/include/unitree_lidar_protocol.h"
 #include "unitree_lidar_sdk/raw_packet_file.h"
@@ -275,7 +276,8 @@ void RunViewer(const std::vector<ReplayFrame>& frames) {
 }  // namespace
 
 int Run(int argc, char** argv) {
-  DM_InitGoogleLogging(argc, argv);
+  google::InitGoogleLogging(argv[0]);
+  gflags::ParseCommandLineFlags(&argc, &argv, true);
   CHECK(!FLAGS_input_path.empty()) << "input_path is required.";
 
   const std::vector<RecordedPacket> packets = LoadPackets(FLAGS_input_path);

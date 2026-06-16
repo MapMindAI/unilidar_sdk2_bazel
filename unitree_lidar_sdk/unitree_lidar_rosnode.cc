@@ -16,11 +16,12 @@
 
 #include <glog/logging.h>
 #include "gflags/gflags.h"
+#include "builtin_interfaces/msg/time.hpp"
 #include "rclcpp/rclcpp.hpp"
 #include "sensor_msgs/msg/imu.hpp"
 #include "sensor_msgs/msg/point_cloud2.hpp"
 #include "sensor_msgs/msg/point_field.hpp"
-#include "third_party/unitree_lidar_sdk/include/unitree_lidar_sdk.h"
+#include "unitree_lidar_sdk/include/unitree_lidar_sdk.h"
 
 DEFINE_string(serial_port, "/dev/ttyACM0", "Serial port for Unitree lidar.");
 DEFINE_int32(baudrate, 4000000, "Serial baudrate for Unitree lidar.");
