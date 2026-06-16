@@ -20,6 +20,13 @@ cc_library(
     ],
 )
 
+
+cc_library(
+    name = "raw_packet_file",
+    hdrs = ["raw_packet_file.h"],
+)
+
+
 cc_binary(
     name = "example_lidar_udp",
     srcs = ["examples/example_lidar_udp.cpp"],
@@ -58,5 +65,31 @@ cc_binary(
         "@com_github_gflags_gflags//:gflags",
         "@com_github_glog//:glog",
         "@ros_humble//:ros_humble",
+    ],
+)
+
+
+cc_binary(
+    name = "unitree_lidar_packet_recorder",
+    srcs = ["unitree_lidar_packet_recorder.cc"],
+    deps = [
+        ":raw_packet_file",
+        ":unilidar_sdk2",
+        "@com_github_gflags_gflags//:gflags",
+        "@dm_core_cpp//common/base:glog",
+        "@dm_core_cpp//common/file:file",
+    ],
+)
+
+cc_binary(
+    name = "unitree_lidar_packet_replayer",
+    srcs = ["unitree_lidar_packet_replayer.cc"],
+    deps = [
+        ":raw_packet_file",
+        ":unilidar_sdk2",
+        "@com_github_gflags_gflags//:gflags",
+        "@dm_core_cpp//common/base:glog",
+        "@eigen",
+        "@pangolin//:pangolin",
     ],
 )

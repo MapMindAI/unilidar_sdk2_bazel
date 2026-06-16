@@ -1,3 +1,5 @@
+// Copyright 2026 MapMindAI Inc. All rights reserved.
+
 #include <unistd.h>
 #include <algorithm>
 #include <atomic>
@@ -12,8 +14,8 @@
 #include <thread>
 #include <vector>
 
-#include <gflags/gflags.h>
 #include <glog/logging.h>
+#include "gflags/gflags.h"
 #include "rclcpp/rclcpp.hpp"
 #include "sensor_msgs/msg/imu.hpp"
 #include "sensor_msgs/msg/point_cloud2.hpp"
@@ -30,14 +32,17 @@ DEFINE_int32(qos_depth, 20, "Publisher queue depth.");
 DEFINE_int32(work_mode, 8, "Lidar work mode sent after startup.");
 DEFINE_bool(use_system_timestamp, true, "Use system timestamp instead of lidar hardware timestamp.");
 DEFINE_int32(cloud_queue_size, 10, "Maximum queued point clouds for async ROS publishing.");
-DEFINE_int32(cloud_accumulate_rings, 18,
+DEFINE_int32(cloud_accumulate_rings, 25,
              "Number of single-ring packets to accumulate before publishing.");
 // custom packet decode has higher efficient
 DEFINE_bool(use_sdk_pointcloud, false,
             "Use Unitree SDK getPointCloud() output instead of custom packet-to-PointCloud2 conversion.");
+DEFINE_bool(fix_interring_ts, false, "Fix the interval between rings, when use_sdk_pointcloud == false");
 DEFINE_bool(threading, true, "Process point cloud publishing on a separate thread, so we won't lost imu data");
 
 DEFINE_bool(reset_lidar_mode, false, "Reset Lidar mode to serial");
+DEFINE_bool(stop_rotate_after_quit, false, "stop rotate after quit");
+DEFINE_double(lidar_alpha_bias_offset, 0.00, "lidar alpha bias offset");
 
 namespace dm::third_party {
 namespace {
@@ -155,22 +160,20 @@ bool BuildCloudMessage(const unilidar_sdk2::LidarPointDataPacket& packet, bool u
 
   const int num_of_points = packet.data.point_num;
   const float scan_period = packet.data.scan_period;
-  // there is the case when : time_increment*300=0.0023115, while scan_period=0.004623
-  // which will leads to lio system fail
-  // const float time_step = packet.data.time_increment;
-  const float time_step = scan_period / num_of_points;
-  const float sin_beta = std::sin(packet.data.param.beta_angle);
+  // time_increment*300=0.0023115, scan_period=0.004623
+  const float time_step = packet.data.time_increment;
+  const float sin_beta = std::sin(packet.data.param.beta_angle);   // beta_angle: 0.015708
   const float cos_beta = std::cos(packet.data.param.beta_angle);
-  const float sin_xi = std::sin(packet.data.param.xi_angle);
+  const float sin_xi = std::sin(packet.data.param.xi_angle);  // xi_angle: 0.00545415
   const float cos_xi = std::cos(packet.data.param.xi_angle);
   const float cos_beta_sin_xi = cos_beta * sin_xi;
   const float sin_beta_cos_xi = sin_beta * cos_xi;
   const float sin_beta_sin_xi = sin_beta * sin_xi;
   const float cos_beta_cos_xi = cos_beta * cos_xi;
-  const float alpha_step = packet.data.angle_increment;
-  const float theta_step = packet.data.com_horizontal_angle_step;
-  const float angle_bias = packet.data.param.alpha_angle_bias;
-  const float theta_bias = packet.data.param.theta_angle_bias;
+  const float alpha_step = packet.data.angle_increment;            // 0.010472 == M_PI / 300
+  const float theta_step = packet.data.com_horizontal_angle_step;  // approx M_PI / 15000
+  const float angle_bias = packet.data.param.alpha_angle_bias;     // 0.0395972
+  const float theta_bias = packet.data.param.theta_angle_bias;     // 2.0769
   const float a_axis_dist = packet.data.param.a_axis_dist;
   const float b_axis_dist = packet.data.param.b_axis_dist;
   const float range_scale = packet.data.param.range_scale;
@@ -180,22 +183,60 @@ bool BuildCloudMessage(const unilidar_sdk2::LidarPointDataPacket& packet, bool u
   const auto& ranges = packet.data.ranges;
   const auto& intensities = packet.data.intensities;
 
+  // Packet-to-cloud model:
+  //
+  //   one packet = one scanned ring / sweep strip
+  //              = N samples with shared calibration + per-sample range/intensity
+  //
+  //   packet.data
+  //     |- param.{beta, xi, alpha_bias, theta_bias, a_axis_dist, b_axis_dist}
+  //     |- angle_min + i * angle_increment                  -> alpha_i
+  //     |- com_horizontal_angle_start + i * theta_step     -> theta_i
+  //     |- ranges[i], intensities[i]
+  //     `- scan_period / point_num                         -> dt between samples
+  //
+  //   For each sample i:
+  //     raw range/count -> metric range -> calibrated local beam coordinates (a, b, c)
+  //                      -> rotate by horizontal angle theta_i
+  //                      -> final point (x, y, z)
+  //                      -> write {x, y, z, intensity, ring, relative_time} into PointCloud2
+  //
+  //   After FLAGS_cloud_accumulate_rings packets:
+  //     ring 0 + ring 1 + ... + ring K-1 -> one published PointCloud2 message
+  //
+  // Geometry intuition for the variables below:
+  //   1. alpha_i is the per-point angle within the current ring.
+  //   2. theta_i is the horizontal rotation of the whole ring sample.
+  //   3. beta/xi plus a_axis_dist/b_axis_dist are factory calibration terms from the SDK.
+  //   4. (a, b, c) is the calibrated point before the final horizontal rotation.
+  //   5. (x, y, z) is the ROS-frame point written into the outgoing cloud.
+
   static size_t number_of_pts = 0;
   static uint16_t accumulated_rings = 0;
   static float time_relative = 0.0f;
   if (accumulated_rings == 0) {
     // first ring, assign timestamp
     msg.header.stamp = current_stamp;
-  } else {
+  } else if (FLAGS_fix_interring_ts) {
     // fix the delta
-    // float delta = ToS(current_stamp) - time_relative - ToS(msg.header.stamp);
-    // time_relative += delta;
+    float delta = ToS(current_stamp) - time_relative - ToS(msg.header.stamp);
+    time_relative += delta;
   }
 
-  float alpha_cur = packet.data.angle_min + angle_bias;
+  float alpha_cur = packet.data.angle_min + angle_bias - FLAGS_lidar_alpha_bias_offset * accumulated_rings;
   float theta_cur = packet.data.com_horizontal_angle_start + theta_bias;
+
+  // static float last_com_horizontal_angle_end = 0.0;
+  // // packet.data.com_horizontal_angle_start - last_com_horizontal_angle_start ~ 0.062 = M_PI / 15000 * 300
+  // LOG(INFO) << accumulated_rings << " " << theta_bias << " " << packet.data.com_horizontal_angle_start << " "
+  //           << packet.data.com_horizontal_angle_start - last_com_horizontal_angle_end;
+  // last_com_horizontal_angle_end = packet.data.com_horizontal_angle_start  + theta_step * 300;
+
   for (int i = 0; i < num_of_points;
        ++i, alpha_cur += alpha_step, theta_cur += theta_step, time_relative += time_step) {
+    // ranges[i] is the raw return in sensor units. First reject obviously invalid returns,
+    // then convert into metric distance with SDK-provided scale/bias and clamp against the
+    // packet's valid range interval.
     float range_i = ranges[i];
     if (ranges[i] < 1) {
       range_i = 0.0;
@@ -209,6 +250,19 @@ bool BuildCloudMessage(const unilidar_sdk2::LidarPointDataPacket& packet, bool u
     const float cos_alpha = std::cos(alpha_cur);
     const float sin_theta = std::sin(theta_cur);
     const float cos_theta = std::cos(theta_cur);
+
+    // Calibrated beam model from Unitree's packet definition:
+    //
+    //   range_float + {alpha, beta, xi} + {a_axis_dist, b_axis_dist}
+    //        -> intermediate coordinates (a, b, c)
+    //        -> rotate in the horizontal plane by theta
+    //        -> Cartesian point:
+    //
+    //             x =  cos(theta) * a - sin(theta) * b
+    //             y =  sin(theta) * a + cos(theta) * b
+    //             z =  c + a_axis_dist
+    //
+    // Think of (a, b, c) as the sensor-calibrated point before the final azimuth rotation.
     const float a = (-cos_beta_sin_xi + sin_beta_cos_xi * sin_alpha) * range_float + b_axis_dist;
     const float b = cos_alpha * cos_xi * range_float;
     const float c = (sin_beta_sin_xi + cos_beta_cos_xi * sin_alpha) * range_float;
@@ -217,6 +271,9 @@ bool BuildCloudMessage(const unilidar_sdk2::LidarPointDataPacket& packet, bool u
     const float z = c + a_axis_dist;
     const float intensity = intensities[i];
 
+    // Each PointCloud2 point stores:
+    //   [x, y, z, padding, intensity, ring_id, relative_time]
+    // where relative_time is the sample time offset from msg.header.stamp.
     const size_t base = number_of_pts * kPointStep;
     std::memcpy(msg.data.data() + base + kXOffset, &x, sizeof(float));
     std::memcpy(msg.data.data() + base + kYOffset, &y, sizeof(float));
@@ -228,6 +285,8 @@ bool BuildCloudMessage(const unilidar_sdk2::LidarPointDataPacket& packet, bool u
   }
 
   accumulated_rings = accumulated_rings + 1;
+  time_relative += (scan_period - num_of_points * time_step);
+
   bool publish = false;
   if (accumulated_rings >= FLAGS_cloud_accumulate_rings) {
     msg.width = number_of_pts;
@@ -332,7 +391,7 @@ class UnitreeLidarRosNode final : public rclcpp::Node {
       cloud_thread_.join();
     }
     if (lidar_reader_ != nullptr) {
-      lidar_reader_->stopLidarRotation();
+      if (FLAGS_stop_rotate_after_quit) lidar_reader_->stopLidarRotation();
       lidar_reader_->closeSerial();
     }
   }
