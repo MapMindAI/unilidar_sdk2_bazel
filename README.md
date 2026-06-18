@@ -83,10 +83,10 @@ I currently use manual adjustment in `unitree_lidar_packet_replayer`: load recor
 apply hand-tuned correction factors during decode, rebuild the merged cloud, and inspect the
 result in Pangolin until the geometry looks consistent.
 
-| | before | after |
-|---|-----|-----|
-| top view | ![assets/raw_top.png] | ![assets/calib_top.png] |
-| side view | ![assets/raw_side.png] | ![assets/calib_side.png] |
+| view | before | after |
+|---|---|---|
+| top view | ![raw top](assets/raw_top.png) | ![calib top](assets/calib_top.png) |
+| side view | ![raw side](assets/raw_side.png) | ![calib side](assets/calib_side.png) |
 
 ## Remote Web Control
 
