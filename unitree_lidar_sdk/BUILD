@@ -85,6 +85,7 @@ cc_binary(
     deps = [
         ":raw_packet_file",
         ":unilidar_sdk2",
+        "//unitree_lidar_sdk/calibration:replayer_common",
         "@system_gflags//:gflags",
         "@system_glog//:glog",
         "@eigen//:eigen",

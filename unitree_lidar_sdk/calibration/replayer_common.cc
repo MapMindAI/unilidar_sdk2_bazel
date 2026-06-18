@@ -64,8 +64,10 @@ bool ComputePointPosition(const PointSample& sample, const UniLidarCalibration& 
     return false;
   }
 
-  const float alpha = sample.alpha_base +
-                      (calibration.enabled ? calibration.delta_alpha_theta_fcn(sample.theta) : 0.0f);
+  const float alpha =
+      sample.alpha_base + (calibration.enabled
+                               ? calibration.delta_alpha_theta_fcn(sample.theta)
+                               : 0.0f);
   const float base_range =
       sample.range_scale * (static_cast<float>(sample.raw_range) + sample.range_bias);
   const float range =
@@ -230,7 +232,7 @@ ReplayFrame BuildMergedBeginningFrame(const std::vector<ReplayFrame>& frames, in
     merged.packet_count += frames[i].packet_count;
     merged.samples.insert(merged.samples.end(), frames[i].samples.begin(), frames[i].samples.end());
   }
-  for (PointSample& sample : merged.samples) {
+  for (PointSample &sample : merged.samples) {
     sample.color = ColorForTheta(sample.theta);
   }
   return merged;

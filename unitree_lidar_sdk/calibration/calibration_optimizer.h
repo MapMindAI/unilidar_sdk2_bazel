@@ -47,12 +47,14 @@ struct CalibrationSolution {
   UniLidarCalibration calibration;
 };
 
-UniLidarCalibration BuildCalibrationFromParameters(const CalibrationParameters& parameters);
+UniLidarCalibration
+BuildCalibrationFromParameters(const CalibrationParameters &parameters);
 ResidualSummary EvaluateResiduals(const ReplayFrame& frame, const std::vector<PlaneModel>& planes,
                                   double assignment_threshold_m);
-CalibrationSolution OptimizeCalibration(const ReplayFrame& merged_frame,
-                                        const std::vector<PlaneModel>& planes,
-                                        const CalibrationOptimizationConfig& config);
+CalibrationSolution
+OptimizeCalibration(const ReplayFrame &merged_frame,
+                    const std::vector<PlaneModel> &planes,
+                    const CalibrationOptimizationConfig &config);
 std::string VectorSummary(const std::vector<float>& values, int max_items = 8);
 
 }  // namespace calibration
