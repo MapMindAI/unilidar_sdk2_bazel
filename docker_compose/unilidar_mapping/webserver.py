@@ -355,6 +355,10 @@ def get_logs(tail):
     )
 
 
+def combine_output(result):
+    return "\n".join(part for part in [result["stdout"], result["stderr"]] if part)
+
+
 def format_command_error(result, fallback):
     message = result["stderr"] or result["stdout"] or fallback
     return {
@@ -409,7 +413,7 @@ class UniLidarHandler(BaseHTTPRequestHandler):
                 message = (
                     f"{DEFAULT_CONTAINER_NAME} is not running yet."
                     if missing_container
-                    else result["stderr"] or result["stdout"] or "Unable to read docker logs."
+                    else combine_output(result) or "Unable to read docker logs."
                 )
                 payload = {
                     "logs": message,
@@ -419,7 +423,7 @@ class UniLidarHandler(BaseHTTPRequestHandler):
                 self._write_json(payload)
                 return
             payload = {
-                "logs": result["stdout"] or result["stderr"],
+                "logs": combine_output(result),
                 "running": status["running"],
                 "container_name": DEFAULT_CONTAINER_NAME,
             }
