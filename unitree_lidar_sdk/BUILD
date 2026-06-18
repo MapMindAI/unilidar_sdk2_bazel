@@ -3,7 +3,7 @@ package(default_visibility = ["//visibility:public"])
 cc_import(
     name = "unilidar_sdk2_archive",
     static_library = select({
-        "//:linux_arm64": "lib/aarch64/libunilidar_sdk2.a",
+        "//toolchain:aarch64_build": "lib/aarch64/libunilidar_sdk2.a",
         "//conditions:default": "lib/x86_64/libunilidar_sdk2.a",
     }),
 )
