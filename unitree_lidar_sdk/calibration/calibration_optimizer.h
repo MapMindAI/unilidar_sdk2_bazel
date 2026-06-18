@@ -26,6 +26,7 @@ struct CalibrationOptimizationConfig {
   std::string range_model_candidates = "constant,linear,quadratic";
   int iterations = 6;
   double range_step_m = 0.01;
+  bool optimize_range_coefficients = true;
   double alpha_step_rad = 0.0005;
   bool optimize_ring_alpha_offsets = true;
   double regularization = 1e-4;

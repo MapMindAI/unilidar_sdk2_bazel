@@ -164,19 +164,22 @@ CalibrationSolution OptimizeCalibration(const ReplayFrame& merged_frame,
     for (int iteration = 0; iteration < config.iterations; ++iteration) {
       bool improved = false;
 
-      for (size_t coefficient_index = 0; coefficient_index < range_coefficients.size();
-           ++coefficient_index) {
-        const float original = range_coefficients[coefficient_index];
-        for (const float delta : {static_cast<float>(-range_step), static_cast<float>(range_step)}) {
-          range_coefficients[coefficient_index] = original + delta;
-          ResidualSummary trial_residuals;
-          const double trial_objective = evaluate_current(&trial_residuals);
-          if (trial_objective < current_objective) {
-            current_objective = trial_objective;
-            current_residuals = trial_residuals;
-            improved = true;
-          } else {
-            range_coefficients[coefficient_index] = original;
+      if (config.optimize_range_coefficients) {
+        for (size_t coefficient_index = 0; coefficient_index < range_coefficients.size();
+             ++coefficient_index) {
+          const float original = range_coefficients[coefficient_index];
+          for (const float delta :
+               {static_cast<float>(-range_step), static_cast<float>(range_step)}) {
+            range_coefficients[coefficient_index] = original + delta;
+            ResidualSummary trial_residuals;
+            const double trial_objective = evaluate_current(&trial_residuals);
+            if (trial_objective < current_objective) {
+              current_objective = trial_objective;
+              current_residuals = trial_residuals;
+              improved = true;
+            } else {
+              range_coefficients[coefficient_index] = original;
+            }
           }
         }
       }

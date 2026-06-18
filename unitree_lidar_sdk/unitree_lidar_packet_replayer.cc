@@ -46,6 +46,8 @@ DEFINE_string(range_model_candidates, "constant,linear,quadratic",
               "Comma-separated range correction models: constant, linear, quadratic.");
 DEFINE_int32(calibration_iterations, 6, "Coordinate-descent iterations per model family.");
 DEFINE_double(calibration_range_step_m, 0.01, "Initial step size for range correction coefficients.");
+DEFINE_bool(optimize_range_coefficients, true,
+            "Optimize delta_range_alpha_fcn coefficients during calibration search.");
 DEFINE_double(calibration_alpha_step_rad, 0.0005,
               "Initial step size for each per-ring alpha offset.");
 DEFINE_bool(optimize_ring_alpha_offsets, true,
@@ -77,6 +79,7 @@ calibration::CalibrationOptimizationConfig MakeCalibrationOptimizationConfig(
   config.range_model_candidates = FLAGS_range_model_candidates;
   config.iterations = FLAGS_calibration_iterations;
   config.range_step_m = FLAGS_calibration_range_step_m;
+  config.optimize_range_coefficients = FLAGS_optimize_range_coefficients;
   config.alpha_step_rad = FLAGS_calibration_alpha_step_rad;
   config.optimize_ring_alpha_offsets = FLAGS_optimize_ring_alpha_offsets;
   config.regularization = FLAGS_calibration_regularization;
