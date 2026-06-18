@@ -40,4 +40,4 @@ build:aarch64 --cpu=aarch64
 build:aarch64 --host_crosstool_top=@bazel_tools//tools/cpp:toolchain
 build:aarch64 --nostart_end_lib
 build:aarch64 --copt=-fPIC
-build:aarch64 --@dm_bazel_platforms//platforms:platform=linux_arm64
+build:aarch64 --//platforms:platform=linux_arm64
