@@ -46,12 +46,8 @@ std::vector<ReplayFrame> frames;
 std::unique_ptr<ReplayFrame> merged_beginning_frame;
 
 double factor_a0 = -0.014;
-double factor_a1 = 0.0;
-double factor_a2 = 0.0;
-
-float alpha_bias(float theta, int ring_id) {
-  return factor_a0 + factor_a1 * sin(theta);
-}
+double factor_a1 = -0.0095;
+double factor_a2 = -0.007;
 
 void AppendPacketPoints(const unilidar_sdk2::LidarPointDataPacket& packet, int ring_index,
                         int max_rings, std::vector<CloudPoint>* points) {
@@ -78,11 +74,9 @@ void AppendPacketPoints(const unilidar_sdk2::LidarPointDataPacket& packet, int r
   const float packet_range_max =
       std::min(packet.data.range_max, static_cast<float>(FLAGS_max_range_m));
 
-  float alpha_cur = packet.data.angle_min + angle_bias;
+  float alpha_cur = packet.data.angle_min + angle_bias + factor_a0;
   float theta_cur = packet.data.com_horizontal_angle_start + theta_bias;
   const Eigen::Vector3f color = ColorForRing(ring_index, std::max(1, max_rings));
-
-  alpha_cur += alpha_bias(theta_cur, ring_index);
 
   for (int i = 0; i < num_of_points; ++i, alpha_cur += alpha_step, theta_cur += theta_step) {
     if (packet.data.ranges[i] < 1) {
@@ -90,6 +84,7 @@ void AppendPacketPoints(const unilidar_sdk2::LidarPointDataPacket& packet, int r
     }
     float range_float =
         range_scale * (static_cast<float>(packet.data.ranges[i]) + range_bias);
+    range_float += factor_a1 * 50.0 * range_float * exp(-(1.0 + 20.0 * factor_a2) * range_float);
     if (range_float < packet_range_min || range_float > packet_range_max) {
       continue;
     }
