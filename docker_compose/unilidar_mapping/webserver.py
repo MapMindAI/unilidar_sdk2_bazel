@@ -191,10 +191,10 @@ INDEX_HTML = """<!doctype html>
       <p>Start or stop the compose stack and watch the live debug output from <code>UniLidarSdk</code>.</p>
 
       <div class="toolbar">
-        <button class="start" id="startBtn">Start UniLidar</button>
-        <button class="stop" id="stopBtn">Stop UniLidar</button>
-        <button class="copy" id="copyBtn">Copy to Drive</button>
-        <button class="ghost" id="refreshBtn">Refresh Logs</button>
+        <button type="button" class="start" id="startBtn" onclick="window.unilidarWeb && window.unilidarWeb.start()">Start UniLidar</button>
+        <button type="button" class="stop" id="stopBtn" onclick="window.unilidarWeb && window.unilidarWeb.stop()">Stop UniLidar</button>
+        <button type="button" class="copy" id="copyBtn" onclick="window.unilidarWeb && window.unilidarWeb.copy()">Copy to Drive</button>
+        <button type="button" class="ghost" id="refreshBtn" onclick="window.unilidarWeb && window.unilidarWeb.refresh()">Refresh Logs</button>
       </div>
 
       <div class="message" id="message"></div>
@@ -235,6 +235,7 @@ INDEX_HTML = """<!doctype html>
     const logs = document.getElementById("logs");
     const message = document.getElementById("message");
     let actionInFlight = false;
+    let apiReady = false;
 
     async function fetchJson(url, options) {
       const response = await fetch(url, options);
@@ -264,6 +265,14 @@ INDEX_HTML = """<!doctype html>
       void button.offsetWidth;
       button.classList.add("click-flash");
       window.setTimeout(() => button.classList.remove("click-flash"), 220);
+    }
+
+    async function handleAction(path, outputTarget = null, button = null) {
+      if (button) {
+        pulseButton(button);
+      }
+      console.log("[unilidar-web] action", path);
+      await runAction(path, outputTarget);
     }
 
     async function refreshStatus() {
@@ -326,23 +335,17 @@ INDEX_HTML = """<!doctype html>
       }
     }
 
-    startBtn.addEventListener("click", () => {
-      pulseButton(startBtn);
-      runAction("/api/start");
-    });
-    stopBtn.addEventListener("click", () => {
-      pulseButton(stopBtn);
-      runAction("/api/stop");
-    });
-    copyBtn.addEventListener("click", () => {
-      pulseButton(copyBtn);
-      runAction("/api/copy", copyLogs);
-    });
-    refreshBtn.addEventListener("click", async () => {
-      pulseButton(refreshBtn);
-      await refreshStatus();
-      await refreshLogs();
-    });
+    window.unilidarWeb = {
+      start: () => handleAction("/api/start", null, startBtn),
+      stop: () => handleAction("/api/stop", null, stopBtn),
+      copy: () => handleAction("/api/copy", copyLogs, copyBtn),
+      refresh: async () => {
+        pulseButton(refreshBtn);
+        await refreshStatus();
+        await refreshLogs();
+      },
+    };
+    apiReady = true;
 
     refreshStatus();
     refreshLogs();
