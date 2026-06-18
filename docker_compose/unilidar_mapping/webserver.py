@@ -96,24 +96,10 @@ INDEX_HTML = """<!doctype html>
       font-weight: 600;
       color: white;
       cursor: pointer;
-      transition: transform 120ms ease, box-shadow 120ms ease, filter 120ms ease,
-        opacity 120ms ease;
-      box-shadow: 0 10px 24px rgba(0, 0, 0, 0.2);
-    }
-    button:hover {
-      transform: translateY(-1px);
-      filter: brightness(1.05);
-    }
-    button:active {
-      transform: translateY(1px) scale(0.98);
-      box-shadow: 0 4px 12px rgba(0, 0, 0, 0.18);
     }
     button:disabled {
       opacity: 0.55;
       cursor: not-allowed;
-      transform: none;
-      box-shadow: none;
-      filter: none;
     }
     .start { background: var(--accent); color: #051b11; }
     .stop { background: var(--danger); }
@@ -121,23 +107,8 @@ INDEX_HTML = """<!doctype html>
       background: transparent;
       color: var(--text);
       border: 1px solid var(--border);
-      box-shadow: none;
     }
     .copy { background: #58a6ff; color: #03111f; }
-    .click-flash {
-      animation: clickFlash 180ms ease-out;
-    }
-    @keyframes clickFlash {
-      0% {
-        transform: scale(1);
-      }
-      50% {
-        transform: scale(0.96);
-      }
-      100% {
-        transform: scale(1);
-      }
-    }
     .status-grid {
       display: grid;
       grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
@@ -191,10 +162,10 @@ INDEX_HTML = """<!doctype html>
       <p>Start or stop the compose stack and watch the live debug output from <code>UniLidarSdk</code>.</p>
 
       <div class="toolbar">
-        <button type="button" class="start" id="startBtn" onclick="window.unilidarWeb && window.unilidarWeb.start()">Start UniLidar</button>
-        <button type="button" class="stop" id="stopBtn" onclick="window.unilidarWeb && window.unilidarWeb.stop()">Stop UniLidar</button>
-        <button type="button" class="copy" id="copyBtn" onclick="window.unilidarWeb && window.unilidarWeb.copy()">Copy to Drive</button>
-        <button type="button" class="ghost" id="refreshBtn" onclick="window.unilidarWeb && window.unilidarWeb.refresh()">Refresh Logs</button>
+        <button class="start" id="startBtn">Start UniLidar</button>
+        <button class="stop" id="stopBtn">Stop UniLidar</button>
+        <button class="copy" id="copyBtn">Copy to Drive</button>
+        <button class="ghost" id="refreshBtn">Refresh Logs</button>
       </div>
 
       <div class="message" id="message"></div>
@@ -235,7 +206,6 @@ INDEX_HTML = """<!doctype html>
     const logs = document.getElementById("logs");
     const message = document.getElementById("message");
     let actionInFlight = false;
-    let apiReady = false;
 
     async function fetchJson(url, options) {
       const response = await fetch(url, options);
@@ -257,22 +227,6 @@ INDEX_HTML = """<!doctype html>
       stopBtn.disabled = busy;
       copyBtn.disabled = busy;
       refreshBtn.disabled = busy;
-    }
-
-    function pulseButton(button) {
-      button.classList.remove("click-flash");
-      // Force a reflow so the animation restarts on repeated clicks.
-      void button.offsetWidth;
-      button.classList.add("click-flash");
-      window.setTimeout(() => button.classList.remove("click-flash"), 220);
-    }
-
-    async function handleAction(path, outputTarget = null, button = null) {
-      if (button) {
-        pulseButton(button);
-      }
-      console.log("[unilidar-web] action", path);
-      await runAction(path, outputTarget);
     }
 
     async function refreshStatus() {
@@ -335,17 +289,13 @@ INDEX_HTML = """<!doctype html>
       }
     }
 
-    window.unilidarWeb = {
-      start: () => handleAction("/api/start", null, startBtn),
-      stop: () => handleAction("/api/stop", null, stopBtn),
-      copy: () => handleAction("/api/copy", copyLogs, copyBtn),
-      refresh: async () => {
-        pulseButton(refreshBtn);
-        await refreshStatus();
-        await refreshLogs();
-      },
-    };
-    apiReady = true;
+    startBtn.addEventListener("click", () => runAction("/api/start"));
+    stopBtn.addEventListener("click", () => runAction("/api/stop"));
+    copyBtn.addEventListener("click", () => runAction("/api/copy", copyLogs));
+    refreshBtn.addEventListener("click", async () => {
+      await refreshStatus();
+      await refreshLogs();
+    });
 
     refreshStatus();
     refreshLogs();
