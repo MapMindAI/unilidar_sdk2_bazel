@@ -4,7 +4,6 @@ import os
 import shlex
 import subprocess
 import sys
-import time
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -26,12 +25,6 @@ STOP_SCRIPT = Path(
     os.environ.get(
         "UNILIDAR_STOP_SCRIPT",
         REPO_ROOT / "docker_compose" / "unilidar_mapping" / "arm64_stop_unilidar.sh",
-    )
-)
-COPY_SCRIPT = Path(
-    os.environ.get(
-        "UNILIDAR_COPY_SCRIPT",
-        REPO_ROOT / "docker_compose" / "unilidar_mapping" / "copy_to_drive.sh",
     )
 )
 
@@ -108,7 +101,6 @@ INDEX_HTML = """<!doctype html>
       color: var(--text);
       border: 1px solid var(--border);
     }
-    .copy { background: #58a6ff; color: #03111f; }
     .status-grid {
       display: grid;
       grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
@@ -164,7 +156,6 @@ INDEX_HTML = """<!doctype html>
       <div class="toolbar">
         <button class="start" id="startBtn">Start UniLidar</button>
         <button class="stop" id="stopBtn">Stop UniLidar</button>
-        <button class="copy" id="copyBtn">Copy to Drive</button>
         <button class="ghost" id="refreshBtn">Refresh Logs</button>
       </div>
 
@@ -185,11 +176,6 @@ INDEX_HTML = """<!doctype html>
         </div>
       </div>
 
-      <div class="status-box" style="margin-bottom: 20px;">
-        <span class="label">Copy Result Log</span>
-        <pre class="logs" id="copyLogs" style="min-height: 180px; max-height: 260px; margin-top: 0;">No copy has run yet.</pre>
-      </div>
-
       <pre class="logs" id="logs">Loading logs...</pre>
     </div>
   </div>
@@ -197,12 +183,10 @@ INDEX_HTML = """<!doctype html>
   <script>
     const startBtn = document.getElementById("startBtn");
     const stopBtn = document.getElementById("stopBtn");
-    const copyBtn = document.getElementById("copyBtn");
     const refreshBtn = document.getElementById("refreshBtn");
     const runningStatus = document.getElementById("runningStatus");
     const containerName = document.getElementById("containerName");
     const composeFile = document.getElementById("composeFile");
-    const copyLogs = document.getElementById("copyLogs");
     const logs = document.getElementById("logs");
     const message = document.getElementById("message");
     let actionInFlight = false;
@@ -225,8 +209,6 @@ INDEX_HTML = """<!doctype html>
       actionInFlight = busy;
       startBtn.disabled = busy;
       stopBtn.disabled = busy;
-      copyBtn.disabled = busy;
-      refreshBtn.disabled = busy;
     }
 
     async function refreshStatus() {
@@ -252,36 +234,15 @@ INDEX_HTML = """<!doctype html>
       }
     }
 
-    function renderCommandOutput(data) {
-      const parts = [];
-      if (data.stdout) {
-        parts.push("STDOUT:\n" + data.stdout);
-      }
-      if (data.stderr) {
-        parts.push("STDERR:\n" + data.stderr);
-      }
-      if (!parts.length) {
-        parts.push("No output.");
-      }
-      return parts.join("\n\n");
-    }
-
-    async function runAction(path, outputTarget = null) {
+    async function runAction(path) {
       if (actionInFlight) return;
       setActionState(true);
       setMessage("Running " + path.replace("/api/", "") + "...");
       try {
         const data = await fetchJson(path, { method: "POST" });
-        setMessage(data.logs || data.stdout || data.stderr || "Command finished.");
-        if (outputTarget) {
-          outputTarget.textContent = renderCommandOutput(data);
-          outputTarget.scrollTop = outputTarget.scrollHeight;
-        }
+        setMessage(data.stdout || "Command finished.");
       } catch (error) {
         setMessage(error.message, true);
-        if (outputTarget) {
-          outputTarget.textContent = error.message;
-        }
       } finally {
         setActionState(false);
         await refreshStatus();
@@ -291,7 +252,6 @@ INDEX_HTML = """<!doctype html>
 
     startBtn.addEventListener("click", () => runAction("/api/start"));
     stopBtn.addEventListener("click", () => runAction("/api/stop"));
-    copyBtn.addEventListener("click", () => runAction("/api/copy", copyLogs));
     refreshBtn.addEventListener("click", async () => {
       await refreshStatus();
       await refreshLogs();
@@ -308,20 +268,11 @@ INDEX_HTML = """<!doctype html>
 
 
 def run_command(command):
-    printable = " ".join(shlex.quote(str(part)) for part in command)
-    sys.stderr.write(f"[webserver] run: {printable}\n")
     process = subprocess.run(
         command,
         capture_output=True,
         text=True,
         cwd=str(REPO_ROOT),
-    )
-    sys.stderr.write(
-        "[webserver] done: rc={rc} stdout={stdout_len} stderr={stderr_len}\n".format(
-            rc=process.returncode,
-            stdout_len=len(process.stdout or ""),
-            stderr_len=len(process.stderr or ""),
-        )
     )
     return {
         "returncode": process.returncode,
@@ -365,17 +316,6 @@ def get_logs(tail):
     )
 
 
-def get_recent_logs(tail, attempts=3, delay_sec=1.0):
-    result = {"returncode": 1, "stdout": "", "stderr": ""}
-    for attempt in range(max(1, attempts)):
-        result = get_logs(tail)
-        if result["returncode"] == 0 and result["stdout"]:
-            return result
-        if attempt + 1 < attempts:
-            time.sleep(delay_sec)
-    return result
-
-
 def format_command_error(result, fallback):
     message = result["stderr"] or result["stdout"] or fallback
     return {
@@ -410,7 +350,6 @@ class UniLidarHandler(BaseHTTPRequestHandler):
 
     def do_GET(self):
         parsed = urlparse(self.path)
-        self.log_message("GET %s", parsed.path)
         if parsed.path == "/":
             self._write_html(INDEX_HTML)
             return
@@ -451,17 +390,11 @@ class UniLidarHandler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         parsed = urlparse(self.path)
-        self.log_message("POST %s", parsed.path)
         if parsed.path == "/api/start":
             result = run_command([str(START_SCRIPT), DEFAULT_COMPOSE_NAME])
             if result["returncode"] == 0:
-                logs = get_recent_logs(200, attempts=5, delay_sec=1.0)
-                if logs["returncode"] == 0:
-                    result["logs"] = logs["stdout"] or logs["stderr"]
-                self.log_message("start succeeded")
                 self._write_json(result)
             else:
-                self.log_message("start failed: %s", result["stderr"] or result["stdout"])
                 self._write_json(
                     format_command_error(result, "Failed to start UniLidar."),
                     HTTPStatus.BAD_GATEWAY,
@@ -470,24 +403,10 @@ class UniLidarHandler(BaseHTTPRequestHandler):
         if parsed.path == "/api/stop":
             result = run_command([str(STOP_SCRIPT), DEFAULT_COMPOSE_NAME])
             if result["returncode"] == 0:
-                self.log_message("stop succeeded")
                 self._write_json(result)
             else:
-                self.log_message("stop failed: %s", result["stderr"] or result["stdout"])
                 self._write_json(
                     format_command_error(result, "Failed to stop UniLidar."),
-                    HTTPStatus.BAD_GATEWAY,
-                )
-            return
-        if parsed.path == "/api/copy":
-            result = run_command([str(COPY_SCRIPT)])
-            if result["returncode"] == 0:
-                self.log_message("copy succeeded")
-                self._write_json(result)
-            else:
-                self.log_message("copy failed: %s", result["stderr"] or result["stdout"])
-                self._write_json(
-                    format_command_error(result, "Failed to copy data to drive."),
                     HTTPStatus.BAD_GATEWAY,
                 )
             return
@@ -499,8 +418,6 @@ def main():
         raise FileNotFoundError(f"start script not found: {START_SCRIPT}")
     if not STOP_SCRIPT.is_file():
         raise FileNotFoundError(f"stop script not found: {STOP_SCRIPT}")
-    if not COPY_SCRIPT.is_file():
-        raise FileNotFoundError(f"copy script not found: {COPY_SCRIPT}")
 
     server = ThreadingHTTPServer((DEFAULT_HOST, DEFAULT_PORT), UniLidarHandler)
     print(
