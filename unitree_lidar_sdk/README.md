@@ -4,13 +4,14 @@ This directory wraps the vendor `unilidar_sdk2` library and adds a few repo-spec
 
 - a ROS2 publisher node for IMU + point cloud
 - a raw packet recorder for `LidarPointDataPacket`
-- an offline replayer with Pangolin visualization
+- offline packet calibration tools with Pangolin visualization
 
 ## Files
 
 - [unitree_lidar_rosnode.cc](./unitree_lidar_rosnode.cc): live ROS2 node
 - [unitree_lidar_packet_recorder.cc](./unitree_lidar_packet_recorder.cc): saves raw `LidarPointDataPacket` records
-- [unitree_lidar_packet_replayer.cc](./unitree_lidar_packet_replayer.cc): loads saved packets, decodes them, and opens a Pangolin viewer
+- [unitree_lidar_packet_replayer.cc](./unitree_lidar_packet_replayer.cc): auto calibration entrypoint for recorded packets
+- [unitree_lidar_packet_manual_calibrator.cc](./unitree_lidar_packet_manual_calibrator.cc): manual calibration entrypoint for recorded packets
 - [raw_packet_file.h](./raw_packet_file.h): shared on-disk packet file format
 - `include/`: vendor SDK headers
 - `lib/`: vendor static libraries
@@ -68,17 +69,30 @@ Useful flags:
 
 Stop with `Ctrl+C`.
 
-## Offline Replayer
+## Offline Calibrators
 
-The replayer loads the recorded packet file, decodes each packet with the same geometry model used by the live node, groups packets into clouds, and visualizes them in Pangolin.
+Both offline calibrators load the recorded packet file, decode each packet with the same geometry model used by the live node, group packets into clouds, and visualize them in Pangolin.
+
+- `unitree_lidar_packet_auto_calibrator`: extracts planes, runs automatic calibration search, then opens the viewer
+- `unitree_lidar_packet_manual_calibrator`: skips the optimizer and lets you tune calibration parameters directly in Pangolin
 
 Example:
 
 ```bash
-bazel-bin/unitree_lidar_sdk/unitree_lidar_packet_replayer \
+bazel-bin/unitree_lidar_sdk/unitree_lidar_packet_auto_calibrator \
   --logtostderr=1 --input_path=data/unitree_lidar_packets.bin \
   --accumulate_rings=50 \
   --merge_beginning_frames=100
+```
+
+Manual calibrator example:
+
+```bash
+bazel-bin/unitree_lidar_sdk/unitree_lidar_packet_manual_calibrator \
+  --logtostderr=1 --input_path=data/unitree_lidar_packets.bin \
+  --merge_beginning_frames=100 \
+  --manual_range_c0=0.0 \
+  --manual_alpha_t0=0.0
 ```
 
 Useful flags:
@@ -96,7 +110,7 @@ Useful flags:
 - `--plane_inlier_threshold_m=<meters>`
 - `--optimize_calibration=true|false`
 - `--range_model_candidates=constant,linear,quadratic`
-- `--optimize_ring_alpha_offsets=true|false`
+- `--optimize_alpha_theta_coefficients=true|false`
 
 Viewer controls:
 
@@ -140,7 +154,7 @@ Current format constants:
 
 ## Decode Model
 
-Both the live node custom path and the offline replayer use the same basic decode path:
+Both the live node custom path and the offline calibrators use the same basic decode path:
 
 ```text
 raw ranges + calibration params
@@ -169,11 +183,11 @@ If you are debugging plane striping or line-to-line offsets, recording packets a
 
 ## Plane-Based Calibration Estimation
 
-The replayer can now estimate a simple calibration from the merged beginning cloud:
+The auto calibrator can estimate a simple calibration from the merged beginning cloud:
 
 1. extract up to `--max_planes` planes with RANSAC
 2. report point-to-plane residuals on the merged cloud
-3. search `delta_range_alpha_fcn(alpha)` models and optional per-ring `delta_alpha_min`
+3. search `delta_range_alpha_fcn(alpha, c0, c1, c2)` plus a linear `delta_alpha_theta_fcn(theta, t0, t1)`
 
 The optimization objective is RMS point-to-nearest-plane distance for points within
 `--calibration_assignment_threshold_m`.
@@ -181,13 +195,13 @@ The optimization objective is RMS point-to-nearest-plane distance for points wit
 Example:
 
 ```bash
-bazel-bin/unitree_lidar_sdk/unitree_lidar_packet_replayer \
+bazel-bin/unitree_lidar_sdk/unitree_lidar_packet_auto_calibrator \
   --input_path=data/unitree_lidar_packets.bin \
   --accumulate_rings=50 \
   --merge_beginning_frames=10 \
   --plane_inlier_threshold_m=0.05 \
   --range_model_candidates=constant,linear,quadratic \
-  --optimize_ring_alpha_offsets=true
+  --optimize_alpha_theta_coefficients=true
 ```
 
 Current range models are:
@@ -196,10 +210,10 @@ Current range models are:
 - `linear`: `c0 + c1 * alpha`
 - `quadratic`: `c0 + c1 * alpha + c2 * alpha^2`
 
-The selected coefficients and ring alpha offsets are printed to the log.
+The selected range coefficients and theta-alpha coefficients are printed to the log.
 
 ## Notes
 
-- The recorder/replayer currently focus on `LIDAR_POINT_DATA_PACKET_TYPE` only.
-- The replayer opens a GUI window, so it needs a desktop session.
+- The recorder/calibrators currently focus on `LIDAR_POINT_DATA_PACKET_TYPE` only.
+- The calibrators open a GUI window, so they need a desktop session.
 - The packet file is tied to the current vendor struct layout. If the vendor SDK changes packet structure, update `raw_packet_file.h` compatibility checks and rebuild.

@@ -39,6 +39,7 @@ cc_library(
     srcs = ["replayer_viewer.cc"],
     hdrs = ["replayer_viewer.h"],
     deps = [
+        ":calibration_optimizer",
         ":plane_extractor",
         ":replayer_common",
         "@pangolin//:pangolin",

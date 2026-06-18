@@ -62,7 +62,7 @@ struct ReplayFrame {
 struct UniLidarCalibration {
   bool enabled = false;
   std::function<float(float /*alpha*/)> delta_range_alpha_fcn = [](float) { return 0.0f; };
-  std::vector<float> delta_alpha_min;
+  std::function<float(float /*theta*/)> delta_alpha_theta_fcn = [](float) { return 0.0f; };
 };
 
 template <typename T>
@@ -72,7 +72,6 @@ bool ReadStruct(std::ifstream* input, T* value) {
 }
 
 Eigen::Vector3f ColorForRing(int ring, int max_rings);
-float RingAlphaOffset(const UniLidarCalibration& calibration, int ring_index);
 bool ComputePointPosition(const PointSample& sample, const UniLidarCalibration& calibration,
                           CloudPoint* point);
 void AppendPacketSamples(const unilidar_sdk2::LidarPointDataPacket& packet, int ring_index,

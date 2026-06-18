@@ -83,6 +83,32 @@ cc_binary(
     name = "unitree_lidar_packet_replayer",
     srcs = ["unitree_lidar_packet_replayer.cc"],
     deps = [
+        ":raw_packet_file",
+        ":unilidar_sdk2",
+        "@system_gflags//:gflags",
+        "@system_glog//:glog",
+        "@eigen//:eigen",
+        "@pangolin//:pangolin",
+    ],
+)
+
+cc_binary(
+    name = "unitree_lidar_packet_auto_calibrator",
+    srcs = ["unitree_lidar_packet_auto_calibrator.cc"],
+    deps = [
+        "//unitree_lidar_sdk/calibration:calibration_optimizer",
+        "//unitree_lidar_sdk/calibration:plane_extractor",
+        "//unitree_lidar_sdk/calibration:replayer_common",
+        "//unitree_lidar_sdk/calibration:replayer_viewer",
+        "@system_gflags//:gflags",
+        "@system_glog//:glog",
+    ],
+)
+
+cc_binary(
+    name = "unitree_lidar_packet_manual_calibrator",
+    srcs = ["unitree_lidar_packet_manual_calibrator.cc"],
+    deps = [
         "//unitree_lidar_sdk/calibration:calibration_optimizer",
         "//unitree_lidar_sdk/calibration:plane_extractor",
         "//unitree_lidar_sdk/calibration:replayer_common",

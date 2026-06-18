@@ -5,6 +5,7 @@
 
 #include <vector>
 
+#include "unitree_lidar_sdk/calibration/calibration_optimizer.h"
 #include "unitree_lidar_sdk/calibration/plane_extractor.h"
 #include "unitree_lidar_sdk/calibration/replayer_common.h"
 
@@ -20,6 +21,7 @@ struct ViewerConfig {
   double orthographic_extent = 50.0;
   bool show_planes = true;
   bool show_plane_inliers = true;
+  CalibrationParameters initial_calibration_parameters;
 };
 
 void RunViewer(const std::vector<ReplayFrame>& frames, const ReplayFrame* merged_beginning_frame,

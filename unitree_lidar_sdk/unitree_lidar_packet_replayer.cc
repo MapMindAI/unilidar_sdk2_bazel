@@ -1,17 +1,24 @@
 // Copyright 2026 MapMindAI Inc. All rights reserved.
 
 #include <algorithm>
+#include <array>
+#include <chrono>
 #include <cmath>
+#include <cstdint>
+#include <cstring>
+#include <fstream>
 #include <memory>
+#include <string>
+#include <utility>
 #include <vector>
 
+#include <Eigen/Core>
 #include <glog/logging.h>
+#include <pangolin/pangolin.h>
 
 #include "gflags/gflags.h"
-#include "unitree_lidar_sdk/calibration/calibration_optimizer.h"
-#include "unitree_lidar_sdk/calibration/plane_extractor.h"
-#include "unitree_lidar_sdk/calibration/replayer_common.h"
-#include "unitree_lidar_sdk/calibration/replayer_viewer.h"
+#include "unitree_lidar_sdk/include/unitree_lidar_protocol.h"
+#include "unitree_lidar_sdk/raw_packet_file.h"
 
 DEFINE_string(input_path, "/tmp/unitree_lidar_packets.bin", "Input raw packet recording file.");
 DEFINE_int32(accumulate_rings, 50, "Number of packets to accumulate into one displayed cloud.");
@@ -28,78 +35,355 @@ DEFINE_bool(orthographic_camera, true, "Use an orthographic camera in the Pangol
 DEFINE_double(orthographic_extent, 50.0,
               "Half extent of the orthographic camera frustum in viewer units.");
 
-DEFINE_bool(extract_planes, true, "Extract planes from the merged beginning cloud.");
-DEFINE_int32(max_planes, 3, "Maximum number of planes to extract from the merged cloud.");
-DEFINE_double(plane_inlier_threshold_m, 0.2,
-              "Point-to-plane distance threshold used for plane extraction and assignment.");
-DEFINE_int32(plane_ransac_iterations, 600, "RANSAC iterations per extracted plane.");
-DEFINE_int32(plane_min_inliers, 400, "Minimum inlier count required to accept an extracted plane.");
-DEFINE_int32(plane_detection_sample_limit, 25000,
-             "Maximum number of merged points used for plane detection.");
-DEFINE_double(plane_min_extent_m, 0.75, "Minimum plane span along each in-plane axis.");
+namespace pangolin {
 
-DEFINE_bool(show_planes, true, "Overlay extracted plane rectangles.");
-DEFINE_bool(show_plane_inliers, true, "Overlay merged-cloud plane inlier points.");
+struct OrthographicHandler3D : Handler3D {
+  OrthographicHandler3D(OpenGlRenderState* cam_state, AxisDirection enforce_up = AxisNone,
+                        float trans_scale = 0.01f,
+                        float zoom_fraction = PANGO_DFLT_HANDLER3D_ZF,
+                        GLprecision initial_extent = 50)
+      : Handler3D((*cam_state), enforce_up, trans_scale, zoom_fraction),
+        current(initial_extent) {}
 
-DEFINE_bool(optimize_calibration, true, "Optimize calibration against extracted planes.");
-DEFINE_string(range_model_candidates, "constant,linear,quadratic",
-              "Comma-separated range correction models: constant, linear, quadratic.");
-DEFINE_int32(calibration_iterations, 6, "Coordinate-descent iterations per model family.");
-DEFINE_double(calibration_range_step_m, 0.01, "Initial step size for range correction coefficients.");
-DEFINE_bool(optimize_range_coefficients, true,
-            "Optimize delta_range_alpha_fcn coefficients during calibration search.");
-DEFINE_double(calibration_alpha_step_rad, 0.0005,
-              "Initial step size for each per-ring alpha offset.");
-DEFINE_bool(optimize_ring_alpha_offsets, true,
-            "Also optimize per-ring alpha offsets in delta_alpha_min.");
-DEFINE_double(calibration_regularization, 1e-4,
-              "L2 regularization applied to the optimized parameters.");
-DEFINE_double(calibration_assignment_threshold_m, 0.08,
-              "Maximum point-to-plane distance counted in the calibration objective.");
+  GLprecision current = 50;
 
-namespace third_party {
+  void Mouse(View& display, MouseButton button, int x, int y, bool pressed,  // NOLINT
+             int button_state) override {                                     // NOLINT
+    last_pos[0] = static_cast<float>(x);
+    last_pos[1] = static_cast<float>(y);
+    funcKeyState = 0;
+    if (pressed) {
+      GetPosNormal(display, x, y, p, Pw, Pc, n, last_z);
+      if (ValidWinDepth(p[2])) {
+        last_z = p[2];
+        std::copy(Pc, Pc + 3, rot_center);
+      }
+      if (button == MouseWheelUp || button == MouseWheelDown) {
+        const GLprecision change = (button == MouseWheelUp ? 1 : -1) * 50 * tf;
+        current -= change * std::pow(std::log(std::abs(current) + 1), 2);
+        current = std::max<GLprecision>(1e-3, current);
+        cam_state->SetProjectionMatrix(pangolin::ProjectionMatrixOrthographic(
+            -current, current, -current, current, -5000, 5000));
+        return;
+      }
+      funcKeyState = button_state;
+    }
+
+    Handler3D::Mouse(display, button, x, y, pressed, button_state);
+  }
+};
+
+}  // namespace pangolin
+
+namespace dm::third_party {
 namespace {
 
-calibration::PlaneExtractionConfig MakePlaneExtractionConfig() {
-  calibration::PlaneExtractionConfig config;
-  config.enabled = FLAGS_extract_planes;
-  config.max_planes = FLAGS_max_planes;
-  config.inlier_threshold_m = FLAGS_plane_inlier_threshold_m;
-  config.ransac_iterations = FLAGS_plane_ransac_iterations;
-  config.min_inliers = FLAGS_plane_min_inliers;
-  config.detection_sample_limit = FLAGS_plane_detection_sample_limit;
-  config.min_extent_m = FLAGS_plane_min_extent_m;
-  return config;
+struct RecordedPacket {
+  RawPacketRecordHeader record_header{};
+  unilidar_sdk2::LidarPointDataPacket packet{};
+};
+
+struct CloudPoint {
+  Eigen::Vector3f xyz = Eigen::Vector3f::Zero();
+  Eigen::Vector3f color = Eigen::Vector3f::Ones();
+};
+
+struct ReplayFrame {
+  std::vector<CloudPoint> points;
+  uint32_t first_sequence = 0;
+  uint32_t last_sequence = 0;
+  uint64_t first_host_timestamp_ns = 0;
+  uint64_t last_host_timestamp_ns = 0;
+  int packet_count = 0;
+};
+
+template <typename T>
+bool ReadStruct(std::ifstream* input, T* value) {
+  CHECK(input != nullptr);
+  CHECK(value != nullptr);
+  input->read(reinterpret_cast<char*>(value), sizeof(T));
+  return input->good();
 }
 
-calibration::CalibrationOptimizationConfig MakeCalibrationOptimizationConfig(
-    int min_required_assigned_points) {
-  calibration::CalibrationOptimizationConfig config;
-  config.enabled = FLAGS_optimize_calibration;
-  config.range_model_candidates = FLAGS_range_model_candidates;
-  config.iterations = FLAGS_calibration_iterations;
-  config.range_step_m = FLAGS_calibration_range_step_m;
-  config.optimize_range_coefficients = FLAGS_optimize_range_coefficients;
-  config.alpha_step_rad = FLAGS_calibration_alpha_step_rad;
-  config.optimize_ring_alpha_offsets = FLAGS_optimize_ring_alpha_offsets;
-  config.regularization = FLAGS_calibration_regularization;
-  config.assignment_threshold_m = FLAGS_calibration_assignment_threshold_m;
-  config.min_required_assigned_points = min_required_assigned_points;
-  return config;
+Eigen::Vector3f ColorForRing(int ring, int max_rings) {
+  static const std::array<Eigen::Vector3f, 8> kPalette = {
+      Eigen::Vector3f(1.0f, 0.25f, 0.25f), Eigen::Vector3f(1.0f, 0.7f, 0.2f),
+      Eigen::Vector3f(0.95f, 0.95f, 0.2f), Eigen::Vector3f(0.25f, 0.95f, 0.25f),
+      Eigen::Vector3f(0.2f, 0.85f, 1.0f),  Eigen::Vector3f(0.35f, 0.45f, 1.0f),
+      Eigen::Vector3f(0.85f, 0.3f, 1.0f),  Eigen::Vector3f(1.0f, 0.35f, 0.7f),
+  };
+  if (max_rings <= 0) {
+    return kPalette[0];
+  }
+  return kPalette[static_cast<size_t>(ring % max_rings) % kPalette.size()];
 }
 
-calibration::ViewerConfig MakeViewerConfig() {
-  calibration::ViewerConfig config;
-  config.window_width = FLAGS_window_width;
-  config.window_height = FLAGS_window_height;
-  config.play_hz = FLAGS_play_hz;
-  config.point_size = FLAGS_point_size;
-  config.merged_point_size = FLAGS_merged_point_size;
-  config.orthographic_camera = FLAGS_orthographic_camera;
-  config.orthographic_extent = FLAGS_orthographic_extent;
-  config.show_planes = FLAGS_show_planes;
-  config.show_plane_inliers = FLAGS_show_plane_inliers;
-  return config;
+void AppendPacketPoints(const unilidar_sdk2::LidarPointDataPacket& packet, int ring_index,
+                        int max_rings, std::vector<CloudPoint>* points) {
+  CHECK(points != nullptr);
+  const int num_of_points = static_cast<int>(packet.data.point_num);
+  const float sin_beta = std::sin(packet.data.param.beta_angle);
+  const float cos_beta = std::cos(packet.data.param.beta_angle);
+  const float sin_xi = std::sin(packet.data.param.xi_angle);
+  const float cos_xi = std::cos(packet.data.param.xi_angle);
+  const float cos_beta_sin_xi = cos_beta * sin_xi;
+  const float sin_beta_cos_xi = sin_beta * cos_xi;
+  const float sin_beta_sin_xi = sin_beta * sin_xi;
+  const float cos_beta_cos_xi = cos_beta * cos_xi;
+  const float alpha_step = packet.data.angle_increment;
+  const float theta_step = packet.data.com_horizontal_angle_step;
+  const float angle_bias = packet.data.param.alpha_angle_bias;
+  const float theta_bias = packet.data.param.theta_angle_bias;
+  const float a_axis_dist = packet.data.param.a_axis_dist;
+  const float b_axis_dist = packet.data.param.b_axis_dist;
+  const float range_scale = packet.data.param.range_scale;
+  const float range_bias = packet.data.param.range_bias;
+  const float packet_range_min = std::max(packet.data.range_min, static_cast<float>(FLAGS_min_range_m));
+  const float packet_range_max = std::min(packet.data.range_max, static_cast<float>(FLAGS_max_range_m));
+
+  float alpha_cur = packet.data.angle_min + angle_bias;
+  float theta_cur = packet.data.com_horizontal_angle_start + theta_bias;
+  const Eigen::Vector3f color = ColorForRing(ring_index, std::max(1, max_rings));
+
+  for (int i = 0; i < num_of_points; ++i, alpha_cur += alpha_step, theta_cur += theta_step) {
+    if (packet.data.ranges[i] < 1) {
+      continue;
+    }
+    float range_float =
+        range_scale * (static_cast<float>(packet.data.ranges[i]) + range_bias);
+    if (range_float < packet_range_min || range_float > packet_range_max) {
+      continue;
+    }
+
+    const float sin_alpha = std::sin(alpha_cur);
+    const float cos_alpha = std::cos(alpha_cur);
+    const float sin_theta = std::sin(theta_cur);
+    const float cos_theta = std::cos(theta_cur);
+
+    const float a = (-cos_beta_sin_xi + sin_beta_cos_xi * sin_alpha) * range_float + b_axis_dist;
+    const float b = cos_alpha * cos_xi * range_float;
+    const float c = (sin_beta_sin_xi + cos_beta_cos_xi * sin_alpha) * range_float;
+
+    CloudPoint point;
+    point.xyz = Eigen::Vector3f(cos_theta * a - sin_theta * b, sin_theta * a + cos_theta * b,
+                                c + a_axis_dist);
+    point.color = color;
+    points->push_back(point);
+  }
+}
+
+std::vector<RecordedPacket> LoadPackets(const std::string& path) {
+  std::ifstream input(path, std::ios::binary);
+  CHECK(input.is_open()) << "Failed to open input file: " << path;
+
+  RawPacketFileHeader file_header{};
+  CHECK(ReadStruct(&input, &file_header)) << "Failed to read file header.";
+  CHECK(std::memcmp(file_header.magic, kRawPacketFileMagic, sizeof(file_header.magic)) == 0)
+      << "Unexpected file magic in " << path;
+  CHECK_EQ(file_header.version, kRawPacketFileVersion)
+      << "Unsupported raw packet file version.";
+  CHECK_EQ(file_header.packet_size_bytes, sizeof(unilidar_sdk2::LidarPointDataPacket))
+      << "Recorded packet size does not match current SDK packet struct.";
+
+  std::vector<RecordedPacket> packets;
+  while (true) {
+    RecordedPacket packet;
+    if (!ReadStruct(&input, &packet.record_header)) {
+      break;
+    }
+    CHECK_EQ(packet.record_header.packet_size_bytes, sizeof(packet.packet))
+        << "Encountered record with unexpected packet size.";
+    input.read(reinterpret_cast<char*>(&packet.packet), sizeof(packet.packet));
+    CHECK(input.good()) << "Truncated packet payload in " << path;
+    packets.push_back(std::move(packet));
+  }
+  return packets;
+}
+
+std::vector<ReplayFrame> BuildReplayFrames(const std::vector<RecordedPacket>& packets,
+                                           int accumulate_rings) {
+  const int rings_per_frame = std::max(1, accumulate_rings);
+  std::vector<ReplayFrame> frames;
+  ReplayFrame current_frame;
+  current_frame.points.reserve(static_cast<size_t>(rings_per_frame) * 300);
+
+  for (size_t i = 0; i < packets.size(); ++i) {
+    if (current_frame.packet_count == 0) {
+      current_frame.first_sequence = packets[i].record_header.sequence;
+      current_frame.first_host_timestamp_ns = packets[i].record_header.host_timestamp_ns;
+    }
+    current_frame.last_sequence = packets[i].record_header.sequence;
+    current_frame.last_host_timestamp_ns = packets[i].record_header.host_timestamp_ns;
+    AppendPacketPoints(packets[i].packet, current_frame.packet_count, rings_per_frame,
+                       &current_frame.points);
+    ++current_frame.packet_count;
+
+    if (current_frame.packet_count >= rings_per_frame) {
+      frames.push_back(std::move(current_frame));
+      current_frame = ReplayFrame{};
+      current_frame.points.reserve(static_cast<size_t>(rings_per_frame) * 300);
+    }
+  }
+  if (current_frame.packet_count > 0) {
+    frames.push_back(std::move(current_frame));
+  }
+  return frames;
+}
+
+ReplayFrame BuildMergedBeginningFrame(const std::vector<ReplayFrame>& frames, int merge_count) {
+  ReplayFrame merged;
+  if (frames.empty() || merge_count <= 0) {
+    return merged;
+  }
+
+  const size_t clamped_count =
+      std::min(frames.size(), static_cast<size_t>(std::max(0, merge_count)));
+  size_t total_points = 0;
+  for (size_t i = 0; i < clamped_count; ++i) {
+    total_points += frames[i].points.size();
+  }
+  merged.points.reserve(total_points);
+
+  merged.first_sequence = frames.front().first_sequence;
+  merged.first_host_timestamp_ns = frames.front().first_host_timestamp_ns;
+  merged.last_sequence = frames[clamped_count - 1].last_sequence;
+  merged.last_host_timestamp_ns = frames[clamped_count - 1].last_host_timestamp_ns;
+
+  for (size_t i = 0; i < clamped_count; ++i) {
+    merged.packet_count += frames[i].packet_count;
+    for (const auto& point : frames[i].points) {
+      CloudPoint merged_point = point;
+      merged_point.color = 0.35f * point.color + 0.65f * Eigen::Vector3f::Ones();
+      merged.points.push_back(std::move(merged_point));
+    }
+  }
+  return merged;
+}
+
+void RunViewer(const std::vector<ReplayFrame>& frames, const ReplayFrame* merged_beginning_frame,
+               int merged_frame_count) {
+  CHECK(!frames.empty()) << "No replay frames loaded.";
+  using Clock = std::chrono::steady_clock;
+
+  pangolin::CreateWindowAndBind("Unitree Lidar Packet Replayer", FLAGS_window_width,
+                                FLAGS_window_height);
+  glEnable(GL_DEPTH_TEST);
+
+  constexpr int kMenuWidth = 280;
+  pangolin::CreatePanel("menu").SetBounds(0.0, 1.0, 0.0, pangolin::Attach::Pix(kMenuWidth));
+  pangolin::Var<bool> ui_play("menu.Play", false, true);
+  pangolin::Var<bool> ui_loop("menu.Loop", true, true);
+  pangolin::Var<bool> ui_prev("menu.Prev", false, false);
+  pangolin::Var<bool> ui_next("menu.Next", false, false);
+  pangolin::Var<bool> ui_reset("menu.Reset", false, false);
+  pangolin::Var<bool> ui_show_axis("menu.Show Axis", true, true);
+  pangolin::Var<bool> ui_show_merged("menu.Show Merged", merged_beginning_frame != nullptr, true);
+  pangolin::Var<bool> ui_show_points("menu.Show Points", true, true);
+  pangolin::Var<double> ui_point_size("menu.Point Size", FLAGS_point_size, 1.0, 8.0, true);
+  pangolin::Var<double> ui_merged_point_size("menu.Merged Pt Size", FLAGS_merged_point_size, 1.0,
+                                             8.0, true);
+  pangolin::Var<double> ui_play_hz("menu.Play Hz", FLAGS_play_hz, 0.5, 30.0, true);
+  pangolin::Var<int> ui_frame_idx("menu.Frame", 0, 0,
+                                  std::max(0, static_cast<int>(frames.size()) - 1), false);
+  pangolin::Var<int> ui_packet_count("menu.Packets/Frame", std::max(1, FLAGS_accumulate_rings), 0,
+                                     0, false);
+  pangolin::Var<int> ui_points("menu.Points", 0, 0, 0, false);
+  pangolin::Var<int> ui_merged_frames("menu.Merged Frames", merged_frame_count, 0, 0, false);
+  pangolin::Var<int> ui_merged_points("menu.Merged Points", merged_beginning_frame == nullptr
+                                                                ? 0
+                                                                : static_cast<int>(
+                                                                      merged_beginning_frame->points
+                                                                          .size()),
+                                      0, 0, false);
+  pangolin::Var<int> ui_seq_first("menu.Seq First", 0, 0, 0, false);
+  pangolin::Var<int> ui_seq_last("menu.Seq Last", 0, 0, 0, false);
+
+  std::shared_ptr<pangolin::OpenGlRenderState> render_state;
+  pangolin::View* view_3d = nullptr;
+  if (FLAGS_orthographic_camera) {
+    const double extent = std::max(1e-3, FLAGS_orthographic_extent);
+    render_state = std::make_shared<pangolin::OpenGlRenderState>(
+        pangolin::ProjectionMatrixOrthographic(-extent, extent, -extent, extent, -5000, 5000),
+        pangolin::ModelViewLookAt(0, 0, 20, 0, 0, 0, pangolin::AxisY));
+    view_3d =
+        &(pangolin::CreateDisplay()
+              .SetBounds(0.0, 1.0, pangolin::Attach::Pix(kMenuWidth), 1.0, -1.0f)
+              .SetHandler(new pangolin::OrthographicHandler3D(
+                  render_state.get(), pangolin::AxisNone, 0.01f,
+                  PANGO_DFLT_HANDLER3D_ZF, extent)));
+  } else {
+    render_state = std::make_shared<pangolin::OpenGlRenderState>(
+        pangolin::ProjectionMatrix(1280, 720, 700, 700, 640, 360, 0.1, 5000),
+        pangolin::ModelViewLookAt(0, -6, -2, 0, 0, 0, pangolin::AxisY));
+    view_3d =
+        &(pangolin::CreateDisplay()
+              .SetBounds(0.0, 1.0, pangolin::Attach::Pix(kMenuWidth), 1.0, -1280.0f / 720.0f)
+              .SetHandler(new pangolin::Handler3D(*render_state)));
+  }
+
+  size_t frame_index = 0;
+  auto last_advance_time = Clock::now();
+  while (!pangolin::ShouldQuit()) {
+    const auto now = Clock::now();
+    const double elapsed_sec =
+        std::chrono::duration<double>(now - last_advance_time).count();
+    if (ui_play && elapsed_sec >= 1.0 / std::max(0.1, static_cast<double>(ui_play_hz))) {
+      last_advance_time = now;
+      if (frame_index + 1 < frames.size()) {
+        ++frame_index;
+      } else if (ui_loop) {
+        frame_index = 0;
+      } else {
+        ui_play = false;
+      }
+    }
+
+    if (pangolin::Pushed(ui_prev)) {
+      frame_index = frame_index == 0 ? 0 : frame_index - 1;
+    }
+    if (pangolin::Pushed(ui_next)) {
+      frame_index = std::min(frame_index + 1, frames.size() - 1);
+    }
+    if (pangolin::Pushed(ui_reset)) {
+      frame_index = 0;
+      last_advance_time = now;
+    }
+
+    const ReplayFrame& frame = frames[frame_index];
+    ui_frame_idx = static_cast<int>(frame_index);
+    ui_packet_count = frame.packet_count;
+    ui_points = static_cast<int>(frame.points.size());
+    ui_seq_first = static_cast<int>(frame.first_sequence);
+    ui_seq_last = static_cast<int>(frame.last_sequence);
+
+    glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+    view_3d->Activate(*render_state);
+    if (ui_show_axis) {
+      pangolin::glDrawAxis(1.0);
+    }
+
+    if (ui_show_merged && merged_beginning_frame != nullptr) {
+      glPointSize(static_cast<float>(ui_merged_point_size));
+      glBegin(GL_POINTS);
+      for (const auto& point : merged_beginning_frame->points) {
+        glColor3f(point.color.x(), point.color.y(), point.color.z());
+        glVertex3f(point.xyz.x(), point.xyz.y(), point.xyz.z());
+      }
+      glEnd();
+    }
+
+    if (ui_show_points) {
+      glPointSize(static_cast<float>(ui_point_size));
+      glBegin(GL_POINTS);
+      for (const auto& point : frame.points) {
+        glColor3f(point.color.x(), point.color.y(), point.color.z());
+        glVertex3f(point.xyz.x(), point.xyz.y(), point.xyz.z());
+      }
+      glEnd();
+    }
+
+    pangolin::FinishFrame();
+  }
 }
 
 }  // namespace
@@ -109,81 +393,29 @@ int Run(int argc, char** argv) {
   gflags::ParseCommandLineFlags(&argc, &argv, true);
   CHECK(!FLAGS_input_path.empty()) << "input_path is required.";
 
-  const std::vector<calibration::RecordedPacket> packets = calibration::LoadPackets(FLAGS_input_path);
+  const std::vector<RecordedPacket> packets = LoadPackets(FLAGS_input_path);
   CHECK(!packets.empty()) << "No packets found in " << FLAGS_input_path;
   LOG(INFO) << "Loaded " << packets.size() << " raw lidar packets from " << FLAGS_input_path;
 
-  std::vector<calibration::ReplayFrame> frames = calibration::BuildReplayFrames(
-      packets, FLAGS_accumulate_rings, FLAGS_min_range_m, FLAGS_max_range_m);
-  CHECK(!frames.empty()) << "No replay frames prepared.";
+  const std::vector<ReplayFrame> frames = BuildReplayFrames(packets, FLAGS_accumulate_rings);
   LOG(INFO) << "Prepared " << frames.size() << " replay frames using accumulate_rings="
             << std::max(1, FLAGS_accumulate_rings);
-
-  calibration::UniLidarCalibration active_calibration;
-  active_calibration.enabled = false;
-  for (calibration::ReplayFrame& frame : frames) {
-    calibration::RebuildFramePoints(active_calibration, &frame);
-  }
-
-  std::unique_ptr<calibration::ReplayFrame> merged_beginning_frame;
-  std::vector<calibration::PlaneModel> planes;
-  const calibration::PlaneExtractionConfig plane_config = MakePlaneExtractionConfig();
-  const calibration::CalibrationOptimizationConfig calibration_config =
-      MakeCalibrationOptimizationConfig(plane_config.min_inliers);
-
+  std::unique_ptr<ReplayFrame> merged_beginning_frame;
   if (FLAGS_merge_beginning_frames > 0) {
     merged_beginning_frame =
-        std::make_unique<calibration::ReplayFrame>(
-            calibration::BuildMergedBeginningFrame(frames, FLAGS_merge_beginning_frames));
-    calibration::RebuildFramePoints(active_calibration, merged_beginning_frame.get());
+        std::make_unique<ReplayFrame>(BuildMergedBeginningFrame(frames, FLAGS_merge_beginning_frames));
     LOG(INFO) << "Merged first "
               << std::min(static_cast<int>(frames.size()), std::max(0, FLAGS_merge_beginning_frames))
               << " frames into " << merged_beginning_frame->points.size() << " background points.";
-
-    planes = calibration::DetectPlanes(*merged_beginning_frame, plane_config);
-    calibration::LogPlaneSummary(planes);
-
-    if (!planes.empty()) {
-      const calibration::ResidualSummary baseline = calibration::EvaluateResiduals(
-          *merged_beginning_frame, planes, calibration_config.assignment_threshold_m);
-      LOG(INFO) << "Baseline residuals: assigned=" << baseline.assigned_points << "/"
-                << baseline.total_points << " mean_abs=" << baseline.mean_abs_error_m
-                << " rms=" << baseline.rms_error_m << " max=" << baseline.max_abs_error_m;
-
-      if (calibration_config.enabled) {
-        const calibration::CalibrationSolution solution = calibration::OptimizeCalibration(
-            *merged_beginning_frame, planes, std::max(1, FLAGS_accumulate_rings), calibration_config);
-        if (std::isfinite(solution.objective)) {
-          LOG(INFO) << "Selected calibration model=" << solution.model_name
-                    << " coeff_m=" << calibration::VectorSummary(solution.range_coefficients_m)
-                    << " alpha_offsets_rad=" << calibration::VectorSummary(solution.delta_alpha_min)
-                    << " rms=" << solution.residuals.rms_error_m
-                    << " mean_abs=" << solution.residuals.mean_abs_error_m
-                    << " assigned=" << solution.residuals.assigned_points;
-          active_calibration = solution.calibration;
-          active_calibration.enabled = true;
-          for (calibration::ReplayFrame& frame : frames) {
-            calibration::RebuildFramePoints(active_calibration, &frame);
-          }
-          calibration::RebuildFramePoints(active_calibration, merged_beginning_frame.get());
-        } else {
-          LOG(WARNING) << "Calibration optimization failed to find a finite solution.";
-        }
-      }
-    } else {
-      LOG(WARNING) << "No planes extracted from merged cloud. Calibration optimization skipped.";
-    }
   }
-
-  calibration::RunViewer(
-      frames, merged_beginning_frame.get(),
-      merged_beginning_frame == nullptr
-          ? 0
-          : std::min(static_cast<int>(frames.size()), std::max(0, FLAGS_merge_beginning_frames)),
-      planes, MakeViewerConfig());
+  RunViewer(frames, merged_beginning_frame.get(),
+            merged_beginning_frame == nullptr
+                ? 0
+                : std::min(static_cast<int>(frames.size()),
+                           std::max(0, FLAGS_merge_beginning_frames)));
   return 0;
 }
 
-}  // namespace third_party
+}  // namespace dm::third_party
 
-int main(int argc, char** argv) { return third_party::Run(argc, argv); }
+int main(int argc, char** argv) { return dm::third_party::Run(argc, argv); }

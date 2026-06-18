@@ -26,12 +26,35 @@ Eigen::Vector3f ColorForRing(int ring, int max_rings) {
   return kPalette[static_cast<size_t>(ring % max_rings) % kPalette.size()];
 }
 
-float RingAlphaOffset(const UniLidarCalibration& calibration, int ring_index) {
-  if (!calibration.enabled || ring_index < 0 ||
-      ring_index >= static_cast<int>(calibration.delta_alpha_min.size())) {
-    return 0.0f;
+Eigen::Vector3f ColorForTheta(float theta) {
+  constexpr float kTwoPi = 2.0f * static_cast<float>(M_PI);
+  float wrapped = std::fmod(theta, kTwoPi);
+  if (wrapped < 0.0f) {
+    wrapped += kTwoPi;
   }
-  return calibration.delta_alpha_min[ring_index];
+  const float t = wrapped / kTwoPi;
+  if (t < 1.0f / 6.0f) {
+    const float u = t * 6.0f;
+    return Eigen::Vector3f(1.0f, u, 0.0f);
+  }
+  if (t < 2.0f / 6.0f) {
+    const float u = (t - 1.0f / 6.0f) * 6.0f;
+    return Eigen::Vector3f(1.0f - u, 1.0f, 0.0f);
+  }
+  if (t < 3.0f / 6.0f) {
+    const float u = (t - 2.0f / 6.0f) * 6.0f;
+    return Eigen::Vector3f(0.0f, 1.0f, u);
+  }
+  if (t < 4.0f / 6.0f) {
+    const float u = (t - 3.0f / 6.0f) * 6.0f;
+    return Eigen::Vector3f(0.0f, 1.0f - u, 1.0f);
+  }
+  if (t < 5.0f / 6.0f) {
+    const float u = (t - 4.0f / 6.0f) * 6.0f;
+    return Eigen::Vector3f(u, 0.0f, 1.0f);
+  }
+  const float u = (t - 5.0f / 6.0f) * 6.0f;
+  return Eigen::Vector3f(1.0f, 0.0f, 1.0f - u);
 }
 
 bool ComputePointPosition(const PointSample& sample, const UniLidarCalibration& calibration,
@@ -41,9 +64,8 @@ bool ComputePointPosition(const PointSample& sample, const UniLidarCalibration& 
     return false;
   }
 
-  const float alpha =
-      sample.alpha_base +
-      (calibration.enabled ? RingAlphaOffset(calibration, sample.ring_index) : 0.0f);
+  const float alpha = sample.alpha_base +
+                      (calibration.enabled ? calibration.delta_alpha_theta_fcn(sample.theta) : 0.0f);
   const float base_range =
       sample.range_scale * (static_cast<float>(sample.raw_range) + sample.range_bias);
   const float range =
@@ -207,6 +229,9 @@ ReplayFrame BuildMergedBeginningFrame(const std::vector<ReplayFrame>& frames, in
   for (size_t i = 0; i < clamped_count; ++i) {
     merged.packet_count += frames[i].packet_count;
     merged.samples.insert(merged.samples.end(), frames[i].samples.begin(), frames[i].samples.end());
+  }
+  for (PointSample& sample : merged.samples) {
+    sample.color = ColorForTheta(sample.theta);
   }
   return merged;
 }

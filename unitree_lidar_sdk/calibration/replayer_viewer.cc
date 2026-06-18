@@ -52,6 +52,14 @@ struct OrthographicHandler3D : Handler3D {
 namespace calibration {
 namespace {
 
+void RefreshMergedFrame(const CalibrationParameters& parameters, ReplayFrame* merged_frame) {
+  if (merged_frame == nullptr) {
+    return;
+  }
+  const UniLidarCalibration calibration = BuildCalibrationFromParameters(parameters);
+  RebuildFramePoints(calibration, merged_frame);
+}
+
 void DrawPlaneRectangle(const PlaneModel& plane) {
   const Eigen::Vector3f p00 =
       plane.centroid + plane.axis_u * plane.uv_min.x() + plane.axis_v * plane.uv_min.y();
@@ -98,6 +106,18 @@ void RunViewer(const std::vector<ReplayFrame>& frames, const ReplayFrame* merged
                const ViewerConfig& config) {
   using Clock = std::chrono::steady_clock;
 
+  std::unique_ptr<ReplayFrame> editable_merged_frame;
+  if (merged_beginning_frame != nullptr) {
+    editable_merged_frame = std::make_unique<ReplayFrame>(*merged_beginning_frame);
+  }
+  CalibrationParameters editable_parameters = config.initial_calibration_parameters;
+  if (editable_parameters.range_coefficients_m.empty()) {
+    editable_parameters.range_coefficients_m = {0.0f, 0.0f, 0.0f};
+  }
+  if (editable_parameters.alpha_theta_coefficients_rad.empty()) {
+    editable_parameters.alpha_theta_coefficients_rad = {0.0f, 0.0f};
+  }
+
   pangolin::CreateWindowAndBind("Unitree Lidar Packet Replayer", config.window_width,
                                 config.window_height);
   glEnable(GL_DEPTH_TEST);
@@ -109,12 +129,36 @@ void RunViewer(const std::vector<ReplayFrame>& frames, const ReplayFrame* merged
   pangolin::Var<bool> ui_prev("menu.Prev", false, false);
   pangolin::Var<bool> ui_next("menu.Next", false, false);
   pangolin::Var<bool> ui_reset("menu.Reset", false, false);
+  pangolin::Var<bool> ui_refresh_merged("menu.Refresh Merged", false, false);
   pangolin::Var<bool> ui_show_axis("menu.Show Axis", true, true);
-  pangolin::Var<bool> ui_show_merged("menu.Show Merged", merged_beginning_frame != nullptr, true);
+  pangolin::Var<bool> ui_show_merged("menu.Show Merged", editable_merged_frame != nullptr, true);
   pangolin::Var<bool> ui_show_points("menu.Show Points", true, true);
   pangolin::Var<bool> ui_show_planes_var("menu.Show Planes", config.show_planes, true);
   pangolin::Var<bool> ui_show_plane_inliers_var("menu.Show Plane Pts", config.show_plane_inliers,
                                                 true);
+  pangolin::Var<double> ui_range_c0("menu.Range c0", editable_parameters.range_coefficients_m[0],
+                                    -0.5, 0.5, false);
+  pangolin::Var<double> ui_range_c1("menu.Range c1", editable_parameters.range_coefficients_m.size() > 1
+                                                         ? editable_parameters.range_coefficients_m[1]
+                                                         : 0.0,
+                                    -0.5, 0.5, false);
+  pangolin::Var<double> ui_range_c2("menu.Range c2", editable_parameters.range_coefficients_m.size() > 2
+                                                         ? editable_parameters.range_coefficients_m[2]
+                                                         : 0.0,
+                                    -0.5, 0.5, false);
+  pangolin::Var<double> ui_alpha_t0("menu.Alpha t0",
+                                    editable_parameters.alpha_theta_coefficients_rad[0], -0.02, 0.02,
+                                    false);
+  pangolin::Var<double> ui_alpha_t1("menu.Alpha t1",
+                                    editable_parameters.alpha_theta_coefficients_rad.size() > 1
+                                        ? editable_parameters.alpha_theta_coefficients_rad[1]
+                                        : 0.0,
+                                    -0.02, 0.02, false);
+  pangolin::Var<double> ui_alpha_t2("menu.Alpha t2",
+                                    editable_parameters.alpha_theta_coefficients_rad.size() > 2
+                                        ? editable_parameters.alpha_theta_coefficients_rad[2]
+                                        : 0.0,
+                                    -0.002, 0.002, false);
   pangolin::Var<double> ui_point_size("menu.Point Size", config.point_size, 1.0, 8.0, true);
   pangolin::Var<double> ui_merged_point_size("menu.Merged Pt Size", config.merged_point_size, 1.0,
                                              8.0, true);
@@ -124,10 +168,10 @@ void RunViewer(const std::vector<ReplayFrame>& frames, const ReplayFrame* merged
   pangolin::Var<int> ui_packet_count("menu.Packets/Frame", 0, 0, 0, false);
   pangolin::Var<int> ui_points("menu.Points", 0, 0, 0, false);
   pangolin::Var<int> ui_merged_frames("menu.Merged Frames", merged_frame_count, 0, 0, false);
-  pangolin::Var<int> ui_merged_points("menu.Merged Points", merged_beginning_frame == nullptr
+  pangolin::Var<int> ui_merged_points("menu.Merged Points", editable_merged_frame == nullptr
                                                                 ? 0
                                                                 : static_cast<int>(
-                                                                      merged_beginning_frame->points
+                                                                      editable_merged_frame->points
                                                                           .size()),
                                       0, 0, false);
   pangolin::Var<int> ui_plane_count("menu.Planes", static_cast<int>(planes.size()), 0, 0, false);
@@ -159,6 +203,14 @@ void RunViewer(const std::vector<ReplayFrame>& frames, const ReplayFrame* merged
 
   size_t frame_index = 0;
   auto last_advance_time = Clock::now();
+
+  double range_c0 = ui_range_c0;
+  double range_c1 = ui_range_c1;
+  double range_c2 = ui_range_c2;
+  double alpha_t0 = ui_alpha_t0;
+  double alpha_t1 = ui_alpha_t1;
+  double alpha_t2 = ui_alpha_t2;
+
   while (!pangolin::ShouldQuit()) {
     const auto now = Clock::now();
     const double elapsed_sec = std::chrono::duration<double>(now - last_advance_time).count();
@@ -183,6 +235,26 @@ void RunViewer(const std::vector<ReplayFrame>& frames, const ReplayFrame* merged
       frame_index = 0;
       last_advance_time = now;
     }
+    bool parameter_notchange = (range_c0 == ui_range_c0 && range_c1 == ui_range_c1 && range_c2 == ui_range_c2 &&
+        alpha_t0 == ui_alpha_t0 && alpha_t1 == ui_alpha_t1 && alpha_t2 == ui_alpha_t2);
+    if (!parameter_notchange) {
+      range_c0 = ui_range_c0;
+      range_c1 = ui_range_c1;
+      range_c2 = ui_range_c2;
+      alpha_t0 = ui_alpha_t0;
+      alpha_t1 = ui_alpha_t1;
+      alpha_t2 = ui_alpha_t2;
+    }
+
+    if ((!parameter_notchange || pangolin::Pushed(ui_refresh_merged)) && editable_merged_frame != nullptr) {
+      editable_parameters.range_coefficients_m = {static_cast<float>(ui_range_c0),
+                                                  static_cast<float>(ui_range_c1),
+                                                  static_cast<float>(ui_range_c2)};
+      editable_parameters.alpha_theta_coefficients_rad = {
+          static_cast<float>(ui_alpha_t0), static_cast<float>(ui_alpha_t1), static_cast<float>(ui_alpha_t2)};
+      RefreshMergedFrame(editable_parameters, editable_merged_frame.get());
+      ui_merged_points = static_cast<int>(editable_merged_frame->points.size());
+    }
 
     const ReplayFrame& frame = frames[frame_index];
     ui_frame_idx = static_cast<int>(frame_index);
@@ -197,18 +269,18 @@ void RunViewer(const std::vector<ReplayFrame>& frames, const ReplayFrame* merged
       pangolin::glDrawAxis(1.0);
     }
 
-    if (ui_show_merged && merged_beginning_frame != nullptr) {
+    if (ui_show_merged && editable_merged_frame != nullptr) {
       glPointSize(static_cast<float>(ui_merged_point_size));
       glBegin(GL_POINTS);
-      for (const auto& point : merged_beginning_frame->points) {
+      for (const auto& point : editable_merged_frame->points) {
         glColor3f(point.color.x(), point.color.y(), point.color.z());
         glVertex3f(point.xyz.x(), point.xyz.y(), point.xyz.z());
       }
       glEnd();
     }
 
-    if (ui_show_plane_inliers_var && merged_beginning_frame != nullptr) {
-      DrawPlaneInliers(*merged_beginning_frame, planes,
+    if (ui_show_plane_inliers_var && editable_merged_frame != nullptr) {
+      DrawPlaneInliers(*editable_merged_frame, planes,
                        static_cast<float>(ui_merged_point_size) + 1.0f);
     }
 
