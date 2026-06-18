@@ -158,3 +158,5 @@ Then it runs:
 - `systemctl daemon-reload`
 - `systemctl enable unilidar-web.service`
 - `systemctl restart unilidar-web.service`
+
+See logs: `sudo journalctl -u unilidar-web.service -b`

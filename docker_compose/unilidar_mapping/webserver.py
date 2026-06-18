@@ -309,7 +309,7 @@ INDEX_HTML = """<!doctype html>
       setMessage("Running " + path.replace("/api/", "") + "...");
       try {
         const data = await fetchJson(path, { method: "POST" });
-        setMessage(data.logs || data.stdout || "Command finished.");
+        setMessage(data.logs || data.stdout || data.stderr || "Command finished.");
         if (outputTarget) {
           outputTarget.textContent = renderCommandOutput(data);
           outputTarget.scrollTop = outputTarget.scrollHeight;
@@ -411,17 +411,6 @@ def get_recent_logs(tail, attempts=3, delay_sec=1.0):
             return result
         if attempt + 1 < attempts:
             time.sleep(delay_sec)
-    return result
-
-
-def get_recent_logs(tail, attempts=3, delay_sec=1.0):
-    result = {"returncode": 1, "stdout": "", "stderr": ""}
-    for attempt in range(max(1, attempts)):
-      result = get_logs(tail)
-      if result["returncode"] == 0 and result["stdout"]:
-        return result
-      if attempt + 1 < attempts:
-        subprocess.run(["sleep", str(delay_sec)], capture_output=True, text=True)
     return result
 
 
