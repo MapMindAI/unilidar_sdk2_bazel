@@ -131,6 +131,11 @@ INDEX_HTML = """<!doctype html>
       border: 1px solid var(--border);
       box-shadow: none;
     }
+    .toggle-active {
+      background: #238636;
+      color: white;
+      border: 1px solid #2ea043;
+    }
     .status-grid {
       display: grid;
       grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
@@ -280,6 +285,14 @@ INDEX_HTML = """<!doctype html>
 
       <div class="message" id="message"></div>
 
+      <div class="status-box" style="margin-bottom: 20px;">
+        <span class="label">Log Source</span>
+        <div class="toolbar" style="margin: 12px 0 0;">
+          <button class="ghost toggle-active" id="uniLogBtn">UniLidarSdk</button>
+          <button class="ghost" id="recorderLogBtn">Recorder</button>
+        </div>
+      </div>
+
       <pre class="logs" id="logs">Loading logs...</pre>
 
       <div class="status-box" style="margin-top: 20px;">
@@ -308,6 +321,8 @@ INDEX_HTML = """<!doctype html>
     const copyBtn = document.getElementById("copyBtn");
     const topicsBtn = document.getElementById("topicsBtn");
     const refreshBtn = document.getElementById("refreshBtn");
+    const uniLogBtn = document.getElementById("uniLogBtn");
+    const recorderLogBtn = document.getElementById("recorderLogBtn");
     const defaultParamsBtn = document.getElementById("defaultParamsBtn");
     const zeroParamsBtn = document.getElementById("zeroParamsBtn");
     const saveParamsBtn = document.getElementById("saveParamsBtn");
@@ -324,6 +339,7 @@ INDEX_HTML = """<!doctype html>
     const rangeFixA1 = document.getElementById("rangeFixA1");
     const message = document.getElementById("message");
     let actionInFlight = false;
+    let logContainer = "UniLidarSdk";
     const defaultCalibrationParams = {
       alpha_bais_bias: "-0.014",
       range_fix_a0: "-0.0095",
@@ -351,8 +367,17 @@ INDEX_HTML = """<!doctype html>
       copyBtn.disabled = busy;
       topicsBtn.disabled = busy;
       refreshBtn.disabled = busy;
+      uniLogBtn.disabled = busy;
+      recorderLogBtn.disabled = busy;
       saveParamsBtn.disabled = busy;
       saveBagSuffixBtn.disabled = busy;
+    }
+
+    function setLogContainer(name) {
+      logContainer = name;
+      const isUni = name === "UniLidarSdk";
+      uniLogBtn.className = "ghost " + (isUni ? "toggle-active" : "");
+      recorderLogBtn.className = "ghost " + (!isUni ? "toggle-active" : "");
     }
 
     async function refreshStatus() {
@@ -431,7 +456,7 @@ INDEX_HTML = """<!doctype html>
 
     async function refreshLogs() {
       try {
-        const data = await fetchJson("/api/logs?tail=50");
+        const data = await fetchJson("/api/logs?tail=50&container=" + encodeURIComponent(logContainer));
         logs.textContent = data.logs || "No logs yet.";
         logs.scrollTop = logs.scrollHeight;
       } catch (error) {
@@ -516,6 +541,14 @@ INDEX_HTML = """<!doctype html>
     stopBtn.addEventListener("click", () => runAction("/api/stop"));
     copyBtn.addEventListener("click", () => runAction("/api/copy", copyLogs));
     topicsBtn.addEventListener("click", listTopics);
+    uniLogBtn.addEventListener("click", async () => {
+      setLogContainer("UniLidarSdk");
+      await refreshLogs();
+    });
+    recorderLogBtn.addEventListener("click", async () => {
+      setLogContainer("Recorder");
+      await refreshLogs();
+    });
     defaultParamsBtn.addEventListener("click", () => setPresetAndSave(defaultCalibrationParams));
     zeroParamsBtn.addEventListener("click", () => setPresetAndSave({
       alpha_bais_bias: "0",
@@ -532,6 +565,7 @@ INDEX_HTML = """<!doctype html>
     });
 
     refreshStatus();
+    setLogContainer("UniLidarSdk");
     refreshParameters();
     refreshBagSuffix();
     refreshLogs();
@@ -660,13 +694,13 @@ def get_status():
     }
 
 
-def get_logs(tail):
+def get_logs(tail, container_name=DEFAULT_CONTAINER_NAME):
     return run_command(
         [
             "docker",
             "logs",
             f"--tail={tail}",
-            DEFAULT_CONTAINER_NAME,
+            container_name,
         ]
     )
 
@@ -724,30 +758,31 @@ class UniLidarHandler(BaseHTTPRequestHandler):
         if parsed.path == "/api/logs":
             query = parse_qs(parsed.query)
             raw_tail = query.get("tail", ["300"])[0]
+            container_name = query.get("container", [DEFAULT_CONTAINER_NAME])[0] or DEFAULT_CONTAINER_NAME
             try:
                 tail = max(1, min(1000, int(raw_tail)))
             except ValueError:
                 tail = 300
-            result = get_logs(tail)
+            result = get_logs(tail, container_name)
             status = get_status()
             if result["returncode"] != 0:
                 missing_container = "No such container" in result["stderr"]
                 message = (
-                    f"{DEFAULT_CONTAINER_NAME} is not running yet."
+                    f"{container_name} is not running yet."
                     if missing_container
                     else combine_output(result) or "Unable to read docker logs."
                 )
                 payload = {
                     "logs": message,
                     "running": status["running"],
-                    "container_name": DEFAULT_CONTAINER_NAME,
+                    "container_name": container_name,
                 }
                 self._write_json(payload)
                 return
             payload = {
                 "logs": combine_output(result),
                 "running": status["running"],
-                "container_name": DEFAULT_CONTAINER_NAME,
+                "container_name": container_name,
             }
             self._write_json(payload)
             return
@@ -795,9 +830,12 @@ class UniLidarHandler(BaseHTTPRequestHandler):
         if parsed.path == "/api/topics":
             result = run_command(
                 [
+                    "docker",
+                    "exec",
+                    DEFAULT_CONTAINER_NAME,
                     "bash",
                     "-lc",
-                    "source /opt/ros/foxy/setup.bash && ros2 topic list",
+                    "source /opt/ros/humble/setup.bash && ros2 topic list",
                 ]
             )
             if result["returncode"] == 0:
