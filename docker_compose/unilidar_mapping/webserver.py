@@ -34,6 +34,18 @@ COPY_SCRIPT = Path(
         REPO_ROOT / "docker_compose" / "unilidar_mapping" / "copy_to_drive.sh",
     )
 )
+ROS2_SETUP_OVERRIDE = os.environ.get("UNILIDAR_ROS2_SETUP", "")
+ROS2_DISTRO_OVERRIDE = os.environ.get("UNILIDAR_ROS2_DISTRO", "")
+ROS2_DISTRO_CANDIDATES = (
+    "jazzy",
+    "iron",
+    "humble",
+    "galactic",
+    "foxy",
+    "eloquent",
+    "dashing",
+    "rolling",
+)
 COMPOSE_PARAM_NAMES = ("alpha_bais_bias", "range_fix_a0", "range_fix_a1")
 
 PARAM_LINE_RE = re.compile(
@@ -257,6 +269,10 @@ INDEX_HTML = """<!doctype html>
           <span class="label">Compose File</span>
           <div class="value" id="composeFile"></div>
         </div>
+        <div class="status-box">
+          <span class="label">ROS 2 Distro</span>
+          <div class="value" id="ros2Distro">Unknown</div>
+        </div>
       </div>
 
       <div class="toolbar">
@@ -273,8 +289,14 @@ INDEX_HTML = """<!doctype html>
         <span class="label">Copy Controls</span>
         <div class="toolbar" style="margin: 12px 0 0;">
           <button class="copy" id="copyBtn">Copy to Drive</button>
+          <button class="ghost" id="detectRosBtn">Detect ROS 2</button>
           <button class="ghost" id="topicsBtn">List Topics</button>
         </div>
+      </div>
+
+      <div class="status-box" style="margin-top: 20px;">
+        <span class="label">ROS 2 Finder</span>
+        <pre class="logs" id="ros2Info" style="min-height: 140px; max-height: 220px; margin-top: 0;">ROS 2 not detected yet.</pre>
       </div>
 
       <div class="status-box" style="margin-top: 20px;">
@@ -293,6 +315,7 @@ INDEX_HTML = """<!doctype html>
     const startBtn = document.getElementById("startBtn");
     const stopBtn = document.getElementById("stopBtn");
     const copyBtn = document.getElementById("copyBtn");
+    const detectRosBtn = document.getElementById("detectRosBtn");
     const topicsBtn = document.getElementById("topicsBtn");
     const refreshBtn = document.getElementById("refreshBtn");
     const defaultParamsBtn = document.getElementById("defaultParamsBtn");
@@ -301,6 +324,8 @@ INDEX_HTML = """<!doctype html>
     const runningStatus = document.getElementById("runningStatus");
     const containerName = document.getElementById("containerName");
     const composeFile = document.getElementById("composeFile");
+    const ros2Distro = document.getElementById("ros2Distro");
+    const ros2Info = document.getElementById("ros2Info");
     const copyLogs = document.getElementById("copyLogs");
     const topicLogs = document.getElementById("topicLogs");
     const logs = document.getElementById("logs");
@@ -334,6 +359,7 @@ INDEX_HTML = """<!doctype html>
       startBtn.disabled = busy;
       stopBtn.disabled = busy;
       copyBtn.disabled = busy;
+      detectRosBtn.disabled = busy;
       topicsBtn.disabled = busy;
       refreshBtn.disabled = busy;
       saveParamsBtn.disabled = busy;
@@ -347,6 +373,7 @@ INDEX_HTML = """<!doctype html>
         runningStatus.className = "value " + (running ? "ok" : "bad");
         containerName.textContent = data.container_name || "-";
         composeFile.textContent = data.compose_file || "-";
+        ros2Distro.textContent = data.ros2_distro || data.ros2_error || "Unknown";
       } catch (error) {
         setMessage(error.message, true);
       }
@@ -371,13 +398,29 @@ INDEX_HTML = """<!doctype html>
       return saveParameters(getParameterInputs());
     }
 
+    async function refreshRos2Info() {
+      try {
+        const data = await fetchJson("/api/ros2");
+        const lines = [
+          "ROS 2 distro: " + (data.ros_distro || "Unknown"),
+          "Setup path: " + (data.setup_path || "Unknown"),
+        ];
+        ros2Info.textContent = lines.join("\n");
+        ros2Distro.textContent = data.ros_distro || "Unknown";
+      } catch (error) {
+        ros2Info.textContent = error.message;
+        ros2Distro.textContent = "Unknown";
+        setMessage(error.message, true);
+      }
+    }
+
     async function listTopics() {
       if (actionInFlight) return;
       setActionState(true);
       setMessage("Listing ROS 2 topics...");
       try {
         const data = await fetchJson("/api/topics", { method: "POST" });
-        const output = [data.stdout, data.stderr].filter(Boolean).join("\\n\\n") || "No topics found.";
+        const output = [data.stdout, data.stderr].filter(Boolean).join("\n\n") || "No topics found.";
         topicLogs.textContent = output;
         topicLogs.scrollTop = topicLogs.scrollHeight;
         setMessage(data.stdout || "Topic list loaded.");
@@ -460,6 +503,7 @@ INDEX_HTML = """<!doctype html>
     startBtn.addEventListener("click", () => runAction("/api/start"));
     stopBtn.addEventListener("click", () => runAction("/api/stop"));
     copyBtn.addEventListener("click", () => runAction("/api/copy", copyLogs));
+    detectRosBtn.addEventListener("click", refreshRos2Info);
     topicsBtn.addEventListener("click", listTopics);
     defaultParamsBtn.addEventListener("click", () => setPresetAndSave(defaultCalibrationParams));
     zeroParamsBtn.addEventListener("click", () => setPresetAndSave({
@@ -475,6 +519,7 @@ INDEX_HTML = """<!doctype html>
     });
 
     refreshStatus();
+    refreshRos2Info();
     refreshParameters();
     refreshLogs();
     setInterval(refreshStatus, 3000);
@@ -501,6 +546,54 @@ def run_command(command):
 
 def compose_file_path(compose_name):
     return str(REPO_ROOT / "docker_compose" / "unilidar_mapping" / f"{compose_name}.compose.yml")
+
+
+def _candidate_ros2_setup_paths():
+    seen = set()
+
+    def add(path):
+        path = str(path)
+        if path not in seen:
+            seen.add(path)
+            yield path
+
+    if ROS2_SETUP_OVERRIDE:
+        yield from add(ROS2_SETUP_OVERRIDE)
+
+    if ROS2_DISTRO_OVERRIDE:
+        yield from add(Path("/opt/ros") / ROS2_DISTRO_OVERRIDE / "setup.bash")
+
+    for distro in ROS2_DISTRO_CANDIDATES:
+        yield from add(Path("/opt/ros") / distro / "setup.bash")
+
+    ros_root = Path("/opt/ros")
+    if ros_root.is_dir():
+        for child in sorted(ros_root.iterdir()):
+            if child.is_dir():
+                yield from add(child / "setup.bash")
+
+
+def find_ros2_setup():
+    for candidate in _candidate_ros2_setup_paths():
+        candidate_path = Path(candidate)
+        if not candidate_path.is_file():
+            continue
+        probe = run_command(
+            [
+                "bash",
+                "-lc",
+                f"source {shlex.quote(str(candidate_path))} >/dev/null 2>&1 && command -v ros2 >/dev/null 2>&1 && printf '%s' \"$ROS_DISTRO\"",
+            ]
+        )
+        if probe["returncode"] == 0 and probe["stdout"]:
+            return {
+                "setup_path": str(candidate_path),
+                "ros_distro": probe["stdout"],
+            }
+    raise FileNotFoundError(
+        "Unable to find a usable ROS 2 setup.bash. "
+        "Set UNILIDAR_ROS2_SETUP or UNILIDAR_ROS2_DISTRO if needed."
+    )
 
 
 def read_compose_parameters():
@@ -545,6 +638,10 @@ def write_compose_parameters(values):
 
 
 def get_status():
+    try:
+        ros2_info = find_ros2_setup()
+    except Exception as error:
+        ros2_info = {"setup_path": "", "ros_distro": "", "error": str(error)}
     inspect = run_command(
         [
             "docker",
@@ -559,6 +656,9 @@ def get_status():
         "running": running,
         "container_name": DEFAULT_CONTAINER_NAME,
         "compose_file": compose_file_path(DEFAULT_COMPOSE_NAME),
+        "ros2_distro": ros2_info.get("ros_distro", ""),
+        "ros2_setup_path": ros2_info.get("setup_path", ""),
+        "ros2_error": ros2_info.get("error", ""),
         "docker_available": run_command(["docker", "version"])["returncode"] == 0,
         "inspect_error": inspect["stderr"] if inspect["returncode"] != 0 else "",
     }
@@ -618,6 +718,12 @@ class UniLidarHandler(BaseHTTPRequestHandler):
             return
         if parsed.path == "/api/status":
             self._write_json(get_status())
+            return
+        if parsed.path == "/api/ros2":
+            try:
+                self._write_json(find_ros2_setup())
+            except Exception as error:
+                self._write_json({"error": str(error)}, HTTPStatus.BAD_GATEWAY)
             return
         if parsed.path == "/api/logs":
             query = parse_qs(parsed.query)
@@ -691,15 +797,20 @@ class UniLidarHandler(BaseHTTPRequestHandler):
                 )
             return
         if parsed.path == "/api/topics":
+            try:
+                ros2_info = find_ros2_setup()
+            except Exception as error:
+                self._write_json({"error": str(error)}, HTTPStatus.BAD_GATEWAY)
+                return
             result = run_command(
                 [
                     "bash",
                     "-lc",
-                    "source /opt/ros/humble/setup.bash && ros2 topic list",
+                    f"source {shlex.quote(ros2_info['setup_path'])} >/dev/null 2>&1 && ros2 topic list",
                 ]
             )
             if result["returncode"] == 0:
-                self._write_json(result)
+                self._write_json({**result, **ros2_info})
             else:
                 self._write_json(
                     format_command_error(result, "Failed to list ROS 2 topics."),
