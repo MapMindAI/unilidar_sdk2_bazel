@@ -1,5 +1,7 @@
 # Unitree Lidar Collector
 
+![raw top](assets/mapping.png)
+
 ## How to use
 
 1. prepare the environment
