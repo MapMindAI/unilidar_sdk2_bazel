@@ -46,4 +46,4 @@ services:
         mkdir -p '/unilidar_sdk2_bazel/data/rosbags'
         BAG_NAME="unilidar_record_$(date +%Y%m%d_%H%M%S)"
         echo "Save to $${BAG_NAME}"
-        exec ros2 bag record -o "/unilidar_sdk2_bazel/data/rosbags/$${BAG_NAME}" /unilidar/imu /unilidar/cloud
+        exec ros2 bag record -o "/unilidar_sdk2_bazel/data/rosbags/$${BAG_NAME}" -a
