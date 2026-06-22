@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 import json
 import os
+import re
 import shlex
 import subprocess
 import sys
@@ -32,6 +33,13 @@ COPY_SCRIPT = Path(
         "UNILIDAR_COPY_SCRIPT",
         REPO_ROOT / "docker_compose" / "unilidar_mapping" / "copy_to_drive.sh",
     )
+)
+COMPOSE_PARAM_NAMES = ("alpha_bais_bias", "range_fix_a0", "range_fix_a1")
+
+PARAM_LINE_RE = re.compile(
+    r"(?P<prefix>--alpha_bais_bias=)(?P<alpha_bais_bias>\S+)"
+    r"(?P<mid1>\s+--range_fix_a0=)(?P<range_fix_a0>\S+)"
+    r"(?P<mid2>\s+(?:--)?range_fix_a1=)(?P<range_fix_a1>\S+)"
 )
 
 
@@ -166,6 +174,44 @@ INDEX_HTML = """<!doctype html>
       min-height: 22px;
       color: var(--muted);
     }
+    .param-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+      gap: 12px;
+      margin: 16px 0 8px;
+    }
+    .field {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+    .field label {
+      font-size: 13px;
+      color: var(--muted);
+    }
+    .field input {
+      width: 100%;
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      background: #0b0f14;
+      color: var(--text);
+      padding: 12px 14px;
+      font-size: 15px;
+      outline: none;
+    }
+    .field input:focus {
+      border-color: #58a6ff;
+      box-shadow: 0 0 0 3px rgba(88, 166, 255, 0.18);
+    }
+    .panel-title {
+      margin: 0 0 6px;
+      font-size: 18px;
+    }
+    .panel-note {
+      margin: 6px 0 0;
+      font-size: 13px;
+      color: var(--muted);
+    }
   </style>
 </head>
 <body>
@@ -182,6 +228,28 @@ INDEX_HTML = """<!doctype html>
       </div>
 
       <div class="message" id="message"></div>
+
+      <div class="status-box" style="margin-bottom: 20px;">
+        <h2 class="panel-title">Calibration Parameters</h2>
+        <p class="panel-note">These values are written back into the compose file. Restart the stack after saving to apply them.</p>
+        <div class="param-grid">
+          <div class="field">
+            <label for="alphaBaisBias">alpha_bais_bias</label>
+            <input id="alphaBaisBias" type="number" step="any" inputmode="decimal">
+          </div>
+          <div class="field">
+            <label for="rangeFixA0">range_fix_a0</label>
+            <input id="rangeFixA0" type="number" step="any" inputmode="decimal">
+          </div>
+          <div class="field">
+            <label for="rangeFixA1">range_fix_a1</label>
+            <input id="rangeFixA1" type="number" step="any" inputmode="decimal">
+          </div>
+        </div>
+        <div class="toolbar" style="margin-bottom: 0;">
+          <button class="copy" id="saveParamsBtn">Save Parameters</button>
+        </div>
+      </div>
 
       <div class="status-grid">
         <div class="status-box">
@@ -212,11 +280,15 @@ INDEX_HTML = """<!doctype html>
     const stopBtn = document.getElementById("stopBtn");
     const copyBtn = document.getElementById("copyBtn");
     const refreshBtn = document.getElementById("refreshBtn");
+    const saveParamsBtn = document.getElementById("saveParamsBtn");
     const runningStatus = document.getElementById("runningStatus");
     const containerName = document.getElementById("containerName");
     const composeFile = document.getElementById("composeFile");
     const copyLogs = document.getElementById("copyLogs");
     const logs = document.getElementById("logs");
+    const alphaBaisBias = document.getElementById("alphaBaisBias");
+    const rangeFixA0 = document.getElementById("rangeFixA0");
+    const rangeFixA1 = document.getElementById("rangeFixA1");
     const message = document.getElementById("message");
     let actionInFlight = false;
 
@@ -240,6 +312,7 @@ INDEX_HTML = """<!doctype html>
       stopBtn.disabled = busy;
       copyBtn.disabled = busy;
       refreshBtn.disabled = busy;
+      saveParamsBtn.disabled = busy;
     }
 
     async function refreshStatus() {
@@ -250,6 +323,21 @@ INDEX_HTML = """<!doctype html>
         runningStatus.className = "value " + (running ? "ok" : "bad");
         containerName.textContent = data.container_name || "-";
         composeFile.textContent = data.compose_file || "-";
+      } catch (error) {
+        setMessage(error.message, true);
+      }
+    }
+
+    function setParameterInputs(params) {
+      alphaBaisBias.value = params.alpha_bais_bias ?? "";
+      rangeFixA0.value = params.range_fix_a0 ?? "";
+      rangeFixA1.value = params.range_fix_a1 ?? "";
+    }
+
+    async function refreshParameters() {
+      try {
+        const data = await fetchJson("/api/params");
+        setParameterInputs(data.params || {});
       } catch (error) {
         setMessage(error.message, true);
       }
@@ -288,15 +376,46 @@ INDEX_HTML = """<!doctype html>
       }
     }
 
+    async function saveParameters() {
+      if (actionInFlight) return;
+      setActionState(true);
+      setMessage("Saving parameters...");
+      try {
+        const payload = {
+          alpha_bais_bias: alphaBaisBias.value,
+          range_fix_a0: rangeFixA0.value,
+          range_fix_a1: rangeFixA1.value,
+        };
+        const data = await fetchJson("/api/params", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify(payload),
+        });
+        setMessage(data.stdout || "Parameters saved.");
+        setParameterInputs(data.params || payload);
+      } catch (error) {
+        setMessage(error.message, true);
+      } finally {
+        setActionState(false);
+        await refreshStatus();
+        await refreshLogs();
+      }
+    }
+
     startBtn.addEventListener("click", () => runAction("/api/start"));
     stopBtn.addEventListener("click", () => runAction("/api/stop"));
     copyBtn.addEventListener("click", () => runAction("/api/copy", copyLogs));
+    saveParamsBtn.addEventListener("click", saveParameters);
     refreshBtn.addEventListener("click", async () => {
       await refreshStatus();
+      await refreshParameters();
       await refreshLogs();
     });
 
     refreshStatus();
+    refreshParameters();
     refreshLogs();
     setInterval(refreshStatus, 3000);
     setInterval(refreshLogs, 2000);
@@ -322,6 +441,47 @@ def run_command(command):
 
 def compose_file_path(compose_name):
     return str(REPO_ROOT / "docker_compose" / "unilidar_mapping" / f"{compose_name}.compose.yml")
+
+
+def read_compose_parameters():
+    compose_path = Path(compose_file_path(DEFAULT_COMPOSE_NAME))
+    if not compose_path.is_file():
+        raise FileNotFoundError(f"compose file not found: {compose_path}")
+
+    content = compose_path.read_text(encoding="utf-8")
+    match = PARAM_LINE_RE.search(content)
+    if not match:
+        raise ValueError("Could not find calibration parameters in compose file.")
+
+    params = {name: match.group(name) for name in COMPOSE_PARAM_NAMES}
+    return params
+
+
+def write_compose_parameters(values):
+    compose_path = Path(compose_file_path(DEFAULT_COMPOSE_NAME))
+    if not compose_path.is_file():
+        raise FileNotFoundError(f"compose file not found: {compose_path}")
+
+    content = compose_path.read_text(encoding="utf-8")
+    match = PARAM_LINE_RE.search(content)
+    if not match:
+        raise ValueError("Could not find calibration parameters in compose file.")
+
+    def replace_value(name):
+        raw_value = values[name]
+        try:
+            return format(float(raw_value), ".15g")
+        except (TypeError, ValueError):
+            raise ValueError(f"Invalid numeric value for {name}: {raw_value!r}")
+
+    replacement = (
+        f"--alpha_bais_bias={replace_value('alpha_bais_bias')}"
+        f"{match.group('mid1')}{replace_value('range_fix_a0')}"
+        f" --range_fix_a1={replace_value('range_fix_a1')}"
+    )
+    updated = content[: match.start()] + replacement + content[match.end() :]
+    compose_path.write_text(updated, encoding="utf-8")
+    return {name: replace_value(name) for name in COMPOSE_PARAM_NAMES}
 
 
 def get_status():
@@ -429,6 +589,13 @@ class UniLidarHandler(BaseHTTPRequestHandler):
             }
             self._write_json(payload)
             return
+        if parsed.path == "/api/params":
+            try:
+                params = read_compose_parameters()
+                self._write_json({"params": params})
+            except Exception as error:
+                self._write_json({"error": str(error)}, HTTPStatus.BAD_GATEWAY)
+            return
         self._write_json({"error": "Not found"}, HTTPStatus.NOT_FOUND)
 
     def do_POST(self):
@@ -462,6 +629,23 @@ class UniLidarHandler(BaseHTTPRequestHandler):
                     format_command_error(result, "Failed to copy data to drive."),
                     HTTPStatus.BAD_GATEWAY,
                 )
+            return
+        if parsed.path == "/api/params":
+            try:
+                raw_length = int(self.headers.get("Content-Length", "0"))
+            except ValueError:
+                raw_length = 0
+            raw_body = self.rfile.read(max(0, raw_length)) if raw_length else b""
+            try:
+                payload = json.loads(raw_body.decode("utf-8") or "{}")
+            except json.JSONDecodeError as error:
+                self._write_json({"error": f"Invalid JSON payload: {error}"}, HTTPStatus.BAD_REQUEST)
+                return
+            try:
+                params = write_compose_parameters(payload)
+                self._write_json({"stdout": "Parameters saved.", "params": params})
+            except Exception as error:
+                self._write_json({"error": str(error)}, HTTPStatus.BAD_GATEWAY)
             return
         self._write_json({"error": "Not found"}, HTTPStatus.NOT_FOUND)
 

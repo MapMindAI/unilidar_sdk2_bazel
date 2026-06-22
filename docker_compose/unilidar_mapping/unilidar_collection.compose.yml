@@ -20,7 +20,7 @@ services:
         done
         source /opt/ros/humble/setup.bash
         export LD_LIBRARY_PATH="/opt/ros/humble/lib:/opt/ros/humble/lib/x86_64-linux-gnu:${LD_LIBRARY_PATH:-}"
-        exec /unilidar_sdk2_bazel/docker_compose/unitree_lidar_sdk/unitree_lidar_rosnode --logtostderr=1 --stop_rotate_after_quit=true --cloud_accumulate_rings=25 --alpha_bais_bias=-0.014 --range_fix_a0=-0.0095 range_fix_a1=-0.007
+        exec /unilidar_sdk2_bazel/docker_compose/unitree_lidar_sdk/unitree_lidar_rosnode --logtostderr=1 --stop_rotate_after_quit=true --cloud_accumulate_rings=25 --alpha_bais_bias=-0.014 --range_fix_a0=-0.0095 --range_fix_a1=-0.007
 
   recorder:
     image: yeliudm/arm64-ros2humble-opencv4.8.1:latest
