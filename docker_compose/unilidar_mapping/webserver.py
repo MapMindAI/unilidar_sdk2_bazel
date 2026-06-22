@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 import json
 import os
+import re
 import shlex
 import subprocess
 import sys
@@ -32,6 +33,14 @@ COPY_SCRIPT = Path(
         "UNILIDAR_COPY_SCRIPT",
         REPO_ROOT / "docker_compose" / "unilidar_mapping" / "copy_to_drive.sh",
     )
+)
+COMPOSE_PARAM_NAMES = ("alpha_bais_bias", "range_fix_a0", "range_fix_a1")
+RECORDER_BAG_SUFFIX_RE = re.compile(r'(?m)^(?P<prefix>\s*BAG_NAME_SUFFIX=")(?P<suffix>[^"]*)(?P<suffix_end>")\s*$')
+
+PARAM_LINE_RE = re.compile(
+    r"(?P<prefix>--alpha_bais_bias=)(?P<alpha_bais_bias>\S+)"
+    r"(?P<mid1>\s+--range_fix_a0=)(?P<range_fix_a0>\S+)"
+    r"(?P<mid2>\s+(?:--)?range_fix_a1=)(?P<range_fix_a1>\S+)"
 )
 
 
@@ -122,6 +131,11 @@ INDEX_HTML = """<!doctype html>
       border: 1px solid var(--border);
       box-shadow: none;
     }
+    .toggle-active {
+      background: #238636;
+      color: white;
+      border: 1px solid #2ea043;
+    }
     .status-grid {
       display: grid;
       grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
@@ -166,6 +180,44 @@ INDEX_HTML = """<!doctype html>
       min-height: 22px;
       color: var(--muted);
     }
+    .param-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+      gap: 12px;
+      margin: 16px 0 8px;
+    }
+    .field {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+    .field label {
+      font-size: 13px;
+      color: var(--muted);
+    }
+    .field input {
+      width: 100%;
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      background: #0b0f14;
+      color: var(--text);
+      padding: 12px 14px;
+      font-size: 15px;
+      outline: none;
+    }
+    .field input:focus {
+      border-color: #58a6ff;
+      box-shadow: 0 0 0 3px rgba(88, 166, 255, 0.18);
+    }
+    .panel-title {
+      margin: 0 0 6px;
+      font-size: 18px;
+    }
+    .panel-note {
+      margin: 6px 0 0;
+      font-size: 13px;
+      color: var(--muted);
+    }
   </style>
 </head>
 <body>
@@ -174,14 +226,41 @@ INDEX_HTML = """<!doctype html>
       <h1>UniLidar Remote Control</h1>
       <p>Start or stop the compose stack and watch the live debug output from <code>UniLidarSdk</code>.</p>
 
-      <div class="toolbar">
-        <button class="start" id="startBtn">Start UniLidar</button>
-        <button class="stop" id="stopBtn">Stop UniLidar</button>
-        <button class="copy" id="copyBtn">Copy to Drive</button>
-        <button class="ghost" id="refreshBtn">Refresh Logs</button>
-      </div>
+      <details class="status-box" style="margin-bottom: 20px;">
+        <summary class="panel-title" style="cursor: pointer; list-style: none;">Calibration Parameters</summary>
+        <p class="panel-note">These values are written back into the compose file. Restart the stack after saving to apply them.</p>
+        <div class="param-grid">
+          <div class="field">
+            <label for="alphaBaisBias">alpha_bais_bias</label>
+            <input id="alphaBaisBias" type="number" step="any" inputmode="decimal">
+          </div>
+          <div class="field">
+            <label for="rangeFixA0">range_fix_a0</label>
+            <input id="rangeFixA0" type="number" step="any" inputmode="decimal">
+          </div>
+          <div class="field">
+            <label for="rangeFixA1">range_fix_a1</label>
+            <input id="rangeFixA1" type="number" step="any" inputmode="decimal">
+          </div>
+        </div>
+        <div class="toolbar" style="margin-bottom: 0;">
+          <button class="ghost" id="defaultParamsBtn">Load Defaults</button>
+          <button class="ghost" id="zeroParamsBtn">All Zeros</button>
+          <button class="copy" id="saveParamsBtn">Save Parameters</button>
+        </div>
+      </details>
 
-      <div class="message" id="message"></div>
+      <details class="status-box" style="margin-bottom: 20px;">
+        <summary class="panel-title" style="cursor: pointer; list-style: none;">Recorder Bag Name</summary>
+        <p class="panel-note">Add an optional postfix to recorder bag names, for example <code>_postfix</code>.</p>
+        <div class="field">
+          <label for="bagNameSuffix">bag postfix</label>
+          <input id="bagNameSuffix" type="text" spellcheck="false" placeholder="_postfix">
+        </div>
+        <div class="toolbar" style="margin-bottom: 0;">
+          <button class="copy" id="saveBagSuffixBtn">Save Bag Postfix</button>
+        </div>
+      </details>
 
       <div class="status-grid">
         <div class="status-box">
@@ -198,12 +277,41 @@ INDEX_HTML = """<!doctype html>
         </div>
       </div>
 
+      <div class="toolbar">
+        <button class="start" id="startBtn">Start UniLidar</button>
+        <button class="stop" id="stopBtn">Stop UniLidar</button>
+        <button class="ghost" id="refreshBtn">Refresh Logs</button>
+      </div>
+
+      <div class="message" id="message"></div>
+
       <div class="status-box" style="margin-bottom: 20px;">
+        <span class="label">Log Source</span>
+        <div class="toolbar" style="margin: 12px 0 0;">
+          <button class="ghost toggle-active" id="uniLogBtn">UniLidarSdk</button>
+          <button class="ghost" id="recorderLogBtn">Recorder</button>
+        </div>
+      </div>
+
+      <pre class="logs" id="logs">Loading logs...</pre>
+
+      <div class="status-box" style="margin-top: 20px;">
+        <span class="label">Copy Controls</span>
+        <div class="toolbar" style="margin: 12px 0 0;">
+          <button class="copy" id="copyBtn">Copy to Drive</button>
+          <button class="ghost" id="topicsBtn">List Topics</button>
+        </div>
+      </div>
+
+      <div class="status-box" style="margin-top: 20px;">
         <span class="label">Copy Result Log</span>
         <pre class="logs" id="copyLogs" style="min-height: 180px; max-height: 260px; margin-top: 0;">No copy has run yet.</pre>
       </div>
 
-      <pre class="logs" id="logs">Loading logs...</pre>
+      <div class="status-box" style="margin-top: 20px;">
+        <span class="label">ROS 2 Topic List</span>
+        <pre class="logs" id="topicLogs" style="min-height: 180px; max-height: 260px; margin-top: 0;">No topic list has run yet.</pre>
+      </div>
     </div>
   </div>
 
@@ -211,14 +319,32 @@ INDEX_HTML = """<!doctype html>
     const startBtn = document.getElementById("startBtn");
     const stopBtn = document.getElementById("stopBtn");
     const copyBtn = document.getElementById("copyBtn");
+    const topicsBtn = document.getElementById("topicsBtn");
     const refreshBtn = document.getElementById("refreshBtn");
+    const uniLogBtn = document.getElementById("uniLogBtn");
+    const recorderLogBtn = document.getElementById("recorderLogBtn");
+    const defaultParamsBtn = document.getElementById("defaultParamsBtn");
+    const zeroParamsBtn = document.getElementById("zeroParamsBtn");
+    const saveParamsBtn = document.getElementById("saveParamsBtn");
+    const bagNameSuffix = document.getElementById("bagNameSuffix");
+    const saveBagSuffixBtn = document.getElementById("saveBagSuffixBtn");
     const runningStatus = document.getElementById("runningStatus");
     const containerName = document.getElementById("containerName");
     const composeFile = document.getElementById("composeFile");
     const copyLogs = document.getElementById("copyLogs");
+    const topicLogs = document.getElementById("topicLogs");
     const logs = document.getElementById("logs");
+    const alphaBaisBias = document.getElementById("alphaBaisBias");
+    const rangeFixA0 = document.getElementById("rangeFixA0");
+    const rangeFixA1 = document.getElementById("rangeFixA1");
     const message = document.getElementById("message");
     let actionInFlight = false;
+    let logContainer = "UniLidarSdk";
+    const defaultCalibrationParams = {
+      alpha_bais_bias: "-0.014",
+      range_fix_a0: "-0.0095",
+      range_fix_a1: "-0.007",
+    };
 
     async function fetchJson(url, options) {
       const response = await fetch(url, options);
@@ -239,7 +365,19 @@ INDEX_HTML = """<!doctype html>
       startBtn.disabled = busy;
       stopBtn.disabled = busy;
       copyBtn.disabled = busy;
+      topicsBtn.disabled = busy;
       refreshBtn.disabled = busy;
+      uniLogBtn.disabled = busy;
+      recorderLogBtn.disabled = busy;
+      saveParamsBtn.disabled = busy;
+      saveBagSuffixBtn.disabled = busy;
+    }
+
+    function setLogContainer(name) {
+      logContainer = name;
+      const isUni = name === "UniLidarSdk";
+      uniLogBtn.className = "ghost " + (isUni ? "toggle-active" : "");
+      recorderLogBtn.className = "ghost " + (!isUni ? "toggle-active" : "");
     }
 
     async function refreshStatus() {
@@ -255,9 +393,70 @@ INDEX_HTML = """<!doctype html>
       }
     }
 
+    function setParameterInputs(params) {
+      alphaBaisBias.value = params.alpha_bais_bias ?? "";
+      rangeFixA0.value = params.range_fix_a0 ?? "";
+      rangeFixA1.value = params.range_fix_a1 ?? "";
+    }
+
+    function getParameterInputs() {
+      return {
+        alpha_bais_bias: alphaBaisBias.value,
+        range_fix_a0: rangeFixA0.value,
+        range_fix_a1: rangeFixA1.value,
+      };
+    }
+
+    function setBagSuffix(value) {
+      bagNameSuffix.value = value ?? "";
+    }
+
+    function setPresetAndSave(params) {
+      setParameterInputs(params);
+      return saveParameters(getParameterInputs());
+    }
+
+    async function listTopics() {
+      if (actionInFlight) return;
+      setActionState(true);
+      setMessage("Listing ROS 2 topics...");
+      try {
+        const data = await fetchJson("/api/topics", { method: "POST" });
+        const output = [data.stdout, data.stderr].filter(Boolean).join("\\n\\n") || "No topics found.";
+        topicLogs.textContent = output;
+        topicLogs.scrollTop = topicLogs.scrollHeight;
+        setMessage(data.stdout || "Topic list loaded.");
+      } catch (error) {
+        topicLogs.textContent = error.message;
+        setMessage(error.message, true);
+      } finally {
+        setActionState(false);
+        await refreshStatus();
+        await refreshLogs();
+      }
+    }
+
+    async function refreshParameters() {
+      try {
+        const data = await fetchJson("/api/params");
+        setParameterInputs(data.params || {});
+      } catch (error) {
+        setMessage(error.message, true);
+      }
+    }
+
+    async function refreshBagSuffix() {
+      try {
+        const data = await fetchJson("/api/bag_suffix");
+        setBagSuffix(data.bag_name_suffix || "");
+      } catch (error) {
+        setMessage(error.message, true);
+      }
+    }
+
     async function refreshLogs() {
       try {
-        const data = await fetchJson("/api/logs?tail=300");
+        const data = await fetchJson("/api/logs?tail=50&container=" + encodeURIComponent(logContainer));
         logs.textContent = data.logs || "No logs yet.";
         logs.scrollTop = logs.scrollHeight;
       } catch (error) {
@@ -288,15 +487,87 @@ INDEX_HTML = """<!doctype html>
       }
     }
 
+    async function saveParameters(overrides = null) {
+      if (actionInFlight) return;
+      setActionState(true);
+      setMessage("Saving parameters...");
+      try {
+        const payload = overrides || getParameterInputs();
+        const data = await fetchJson("/api/params", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify(payload),
+        });
+        setMessage(data.stdout || "Parameters saved.");
+        setParameterInputs(data.params || payload);
+      } catch (error) {
+        setMessage(error.message, true);
+      } finally {
+        setActionState(false);
+        await refreshStatus();
+        await refreshLogs();
+      }
+    }
+
+    async function saveBagSuffix() {
+      if (actionInFlight) return;
+      setActionState(true);
+      setMessage("Saving bag postfix...");
+      try {
+        const payload = {
+          bag_name_suffix: bagNameSuffix.value,
+        };
+        const data = await fetchJson("/api/bag_suffix", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify(payload),
+        });
+        setMessage(data.stdout || "Bag postfix saved.");
+        setBagSuffix(data.bag_name_suffix || payload.bag_name_suffix);
+      } catch (error) {
+        setMessage(error.message, true);
+      } finally {
+        setActionState(false);
+        await refreshStatus();
+        await refreshLogs();
+      }
+    }
+
     startBtn.addEventListener("click", () => runAction("/api/start"));
     stopBtn.addEventListener("click", () => runAction("/api/stop"));
     copyBtn.addEventListener("click", () => runAction("/api/copy", copyLogs));
+    topicsBtn.addEventListener("click", listTopics);
+    uniLogBtn.addEventListener("click", async () => {
+      setLogContainer("UniLidarSdk");
+      await refreshLogs();
+    });
+    recorderLogBtn.addEventListener("click", async () => {
+      setLogContainer("Recorder");
+      await refreshLogs();
+    });
+    defaultParamsBtn.addEventListener("click", () => setPresetAndSave(defaultCalibrationParams));
+    zeroParamsBtn.addEventListener("click", () => setPresetAndSave({
+      alpha_bais_bias: "0",
+      range_fix_a0: "0",
+      range_fix_a1: "0",
+    }));
+    saveParamsBtn.addEventListener("click", saveParameters);
+    saveBagSuffixBtn.addEventListener("click", saveBagSuffix);
     refreshBtn.addEventListener("click", async () => {
       await refreshStatus();
+      await refreshParameters();
+      await refreshBagSuffix();
       await refreshLogs();
     });
 
     refreshStatus();
+    setLogContainer("UniLidarSdk");
+    refreshParameters();
+    refreshBagSuffix();
     refreshLogs();
     setInterval(refreshStatus, 3000);
     setInterval(refreshLogs, 2000);
@@ -324,6 +595,85 @@ def compose_file_path(compose_name):
     return str(REPO_ROOT / "docker_compose" / "unilidar_mapping" / f"{compose_name}.compose.yml")
 
 
+def read_compose_parameters():
+    compose_path = Path(compose_file_path(DEFAULT_COMPOSE_NAME))
+    if not compose_path.is_file():
+        raise FileNotFoundError(f"compose file not found: {compose_path}")
+
+    content = compose_path.read_text(encoding="utf-8")
+    match = PARAM_LINE_RE.search(content)
+    if not match:
+        raise ValueError("Could not find calibration parameters in compose file.")
+
+    params = {name: match.group(name) for name in COMPOSE_PARAM_NAMES}
+    return params
+
+
+def read_bag_name_suffix():
+    compose_path = Path(compose_file_path(DEFAULT_COMPOSE_NAME))
+    if not compose_path.is_file():
+        raise FileNotFoundError(f"compose file not found: {compose_path}")
+
+    content = compose_path.read_text(encoding="utf-8")
+    match = RECORDER_BAG_SUFFIX_RE.search(content)
+    if not match:
+        raise ValueError("Could not find bag postfix in compose file.")
+    return match.group("suffix")
+
+
+def write_compose_parameters(values):
+    compose_path = Path(compose_file_path(DEFAULT_COMPOSE_NAME))
+    if not compose_path.is_file():
+        raise FileNotFoundError(f"compose file not found: {compose_path}")
+
+    content = compose_path.read_text(encoding="utf-8")
+    match = PARAM_LINE_RE.search(content)
+    if not match:
+        raise ValueError("Could not find calibration parameters in compose file.")
+
+    def replace_value(name):
+        raw_value = values[name]
+        try:
+            return format(float(raw_value), ".15g")
+        except (TypeError, ValueError):
+            raise ValueError(f"Invalid numeric value for {name}: {raw_value!r}")
+
+    replacement = (
+        f"--alpha_bais_bias={replace_value('alpha_bais_bias')}"
+        f"{match.group('mid1')}{replace_value('range_fix_a0')}"
+        f" --range_fix_a1={replace_value('range_fix_a1')}"
+    )
+    updated = content[: match.start()] + replacement + content[match.end() :]
+    compose_path.write_text(updated, encoding="utf-8")
+    return {name: replace_value(name) for name in COMPOSE_PARAM_NAMES}
+
+
+def write_bag_name_suffix(value):
+    compose_path = Path(compose_file_path(DEFAULT_COMPOSE_NAME))
+    if not compose_path.is_file():
+        raise FileNotFoundError(f"compose file not found: {compose_path}")
+
+    content = compose_path.read_text(encoding="utf-8")
+    match = RECORDER_BAG_SUFFIX_RE.search(content)
+    if not match:
+        raise ValueError("Could not find bag postfix in compose file.")
+
+    suffix = "" if value is None else str(value)
+    if "\n" in suffix or "\r" in suffix:
+        raise ValueError("bag postfix must be a single line.")
+    escaped_suffix = (
+        suffix.replace("\\", "\\\\")
+        .replace('"', '\\"')
+        .replace("$", "\\$")
+        .replace("`", "\\`")
+    )
+
+    replacement = f'{match.group("prefix")}{escaped_suffix}{match.group("suffix_end")}'
+    updated = content[: match.start()] + replacement + content[match.end() :]
+    compose_path.write_text(updated, encoding="utf-8")
+    return suffix
+
+
 def get_status():
     inspect = run_command(
         [
@@ -344,13 +694,13 @@ def get_status():
     }
 
 
-def get_logs(tail):
+def get_logs(tail, container_name=DEFAULT_CONTAINER_NAME):
     return run_command(
         [
             "docker",
             "logs",
             f"--tail={tail}",
-            DEFAULT_CONTAINER_NAME,
+            container_name,
         ]
     )
 
@@ -399,35 +749,49 @@ class UniLidarHandler(BaseHTTPRequestHandler):
         if parsed.path == "/api/status":
             self._write_json(get_status())
             return
+        if parsed.path == "/api/bag_suffix":
+            try:
+                self._write_json({"bag_name_suffix": read_bag_name_suffix()})
+            except Exception as error:
+                self._write_json({"error": str(error)}, HTTPStatus.BAD_GATEWAY)
+            return
         if parsed.path == "/api/logs":
             query = parse_qs(parsed.query)
             raw_tail = query.get("tail", ["300"])[0]
+            container_name = query.get("container", [DEFAULT_CONTAINER_NAME])[0] or DEFAULT_CONTAINER_NAME
             try:
                 tail = max(1, min(1000, int(raw_tail)))
             except ValueError:
                 tail = 300
-            result = get_logs(tail)
+            result = get_logs(tail, container_name)
             status = get_status()
             if result["returncode"] != 0:
                 missing_container = "No such container" in result["stderr"]
                 message = (
-                    f"{DEFAULT_CONTAINER_NAME} is not running yet."
+                    f"{container_name} is not running yet."
                     if missing_container
                     else combine_output(result) or "Unable to read docker logs."
                 )
                 payload = {
                     "logs": message,
                     "running": status["running"],
-                    "container_name": DEFAULT_CONTAINER_NAME,
+                    "container_name": container_name,
                 }
                 self._write_json(payload)
                 return
             payload = {
                 "logs": combine_output(result),
                 "running": status["running"],
-                "container_name": DEFAULT_CONTAINER_NAME,
+                "container_name": container_name,
             }
             self._write_json(payload)
+            return
+        if parsed.path == "/api/params":
+            try:
+                params = read_compose_parameters()
+                self._write_json({"params": params})
+            except Exception as error:
+                self._write_json({"error": str(error)}, HTTPStatus.BAD_GATEWAY)
             return
         self._write_json({"error": "Not found"}, HTTPStatus.NOT_FOUND)
 
@@ -462,6 +826,59 @@ class UniLidarHandler(BaseHTTPRequestHandler):
                     format_command_error(result, "Failed to copy data to drive."),
                     HTTPStatus.BAD_GATEWAY,
                 )
+            return
+        if parsed.path == "/api/topics":
+            result = run_command(
+                [
+                    "docker",
+                    "exec",
+                    DEFAULT_CONTAINER_NAME,
+                    "bash",
+                    "-lc",
+                    "source /opt/ros/humble/setup.bash && ros2 topic list",
+                ]
+            )
+            if result["returncode"] == 0:
+                self._write_json(result)
+            else:
+                self._write_json(
+                    format_command_error(result, "Failed to list ROS 2 topics."),
+                    HTTPStatus.BAD_GATEWAY,
+                )
+            return
+        if parsed.path == "/api/params":
+            try:
+                raw_length = int(self.headers.get("Content-Length", "0"))
+            except ValueError:
+                raw_length = 0
+            raw_body = self.rfile.read(max(0, raw_length)) if raw_length else b""
+            try:
+                payload = json.loads(raw_body.decode("utf-8") or "{}")
+            except json.JSONDecodeError as error:
+                self._write_json({"error": f"Invalid JSON payload: {error}"}, HTTPStatus.BAD_REQUEST)
+                return
+            try:
+                params = write_compose_parameters(payload)
+                self._write_json({"stdout": "Parameters saved.", "params": params})
+            except Exception as error:
+                self._write_json({"error": str(error)}, HTTPStatus.BAD_GATEWAY)
+            return
+        if parsed.path == "/api/bag_suffix":
+            try:
+                raw_length = int(self.headers.get("Content-Length", "0"))
+            except ValueError:
+                raw_length = 0
+            raw_body = self.rfile.read(max(0, raw_length)) if raw_length else b""
+            try:
+                payload = json.loads(raw_body.decode("utf-8") or "{}")
+            except json.JSONDecodeError as error:
+                self._write_json({"error": f"Invalid JSON payload: {error}"}, HTTPStatus.BAD_REQUEST)
+                return
+            try:
+                bag_name_suffix = write_bag_name_suffix(payload.get("bag_name_suffix", ""))
+                self._write_json({"stdout": "Bag postfix saved.", "bag_name_suffix": bag_name_suffix})
+            except Exception as error:
+                self._write_json({"error": str(error)}, HTTPStatus.BAD_GATEWAY)
             return
         self._write_json({"error": "Not found"}, HTTPStatus.NOT_FOUND)
 

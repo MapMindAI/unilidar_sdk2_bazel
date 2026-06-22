@@ -2,6 +2,10 @@
 
 ![raw top](assets/mapping.png)
 
+* RK3566 for data collection.
+* UniLidar L2 for pointcloud.
+* 3D print box : https://www.tinkercad.com/things/cM7BuANyys1-unilidar-box
+
 ## How to use
 
 1. prepare the environment
