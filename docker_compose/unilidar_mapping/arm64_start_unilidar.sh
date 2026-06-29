@@ -9,6 +9,14 @@ fi
 
 COMPOSE_PROJECT_NAME="${COMPOSE_PROJECT_NAME:-unilidar}"
 COMPOSE_FILE_PATH="${COMPOSE_FILE_PATH:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)/docker_compose/unilidar_mapping/${COMPOSE_NAME}.compose.yml}"
+RTK_ENV_FILE="${RTK_ENV_FILE:-/etc/unilidar/rtk.env}"
+
+if [[ -r "${RTK_ENV_FILE}" ]]; then
+  set -a
+  # shellcheck disable=SC1090
+  source "${RTK_ENV_FILE}"
+  set +a
+fi
 
 if ! command -v docker >/dev/null 2>&1; then
   echo "docker not found" >&2

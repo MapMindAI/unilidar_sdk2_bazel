@@ -116,6 +116,9 @@ Optional environment variables:
 - `UNILIDAR_COMPOSE_NAME` default `unilidar_collection`
 - `UNILIDAR_CONTAINER_NAME` default `UniLidarSdk`
 
+When running from the boot service, RTK compose variables are loaded from
+`/etc/unilidar/rtk.env`, not from `~/.bashrc`.
+
 <details>
 <summary>Enable At Boot</summary>
 
@@ -134,6 +137,7 @@ sudo bash docker_compose/boot_app/enable_unilidar_web_boot.sh
 This writes:
 
 - `/etc/systemd/system/unilidar-web.service`
+- `/etc/unilidar/rtk.env` if it does not already exist
 
 Then it runs:
 

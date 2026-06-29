@@ -201,19 +201,32 @@ ros2 topic echo /rtk/fix
 Docker compose service:
 
 ```bash
-export RTK_SERIAL_PORT=/dev/ttyUSB0
-export NTRIP_HOST=your.caster.example.com
-export NTRIP_PORT=2101
-export NTRIP_MOUNTPOINT=YOUR_MOUNTPOINT
-export NTRIP_USER=your-user
-export NTRIP_PASSWORD='your-password'
-
-bash docker_compose/unilidar_mapping/arm64_start_unilidar.sh
+sudo nano /etc/unilidar/rtk.env
+sudo systemctl restart unilidar-web.service
 ```
 
+Example `/etc/unilidar/rtk.env`:
+
+```bash
+RTK_SERIAL_PORT=/dev/ttyUSB0
+RTK_BAUDRATE=115200
+RTK_FRAME_ID=rtk
+RTK_FIX_TOPIC=/rtk/fix
+
+NTRIP_HOST=your.caster.example.com
+NTRIP_PORT=2101
+NTRIP_MOUNTPOINT=YOUR_MOUNTPOINT
+NTRIP_USER=your-user
+NTRIP_PASSWORD=your-password
+NTRIP_TLS=false
+```
+
+The web app is launched by `systemd`, so it does not read `~/.bashrc`.
+`docker_compose/boot_app/enable_unilidar_web_boot.sh` creates
+`/etc/unilidar/rtk.env` and configures `unilidar-web.service` to load it.
 The compose file starts `RtkPublisher` and records `/rtk/fix` in the rosbag
-alongside the LiDAR topics. Leave `NTRIP_HOST` empty to publish uncorrected GNSS
-fixes without NTRIP.
+alongside the LiDAR topics. Leave `NTRIP_HOST` empty to publish uncorrected
+GNSS fixes without NTRIP.
 
 If the USB device appears as another port, list candidates with:
 
