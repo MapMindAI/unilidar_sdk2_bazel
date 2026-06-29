@@ -308,21 +308,16 @@ INDEX_HTML = """<!doctype html>
 
       <pre class="logs" id="logs">Loading logs...</pre>
 
-      <div class="status-box" style="margin-top: 20px;">
-        <span class="label">Tools</span>
+      <details class="status-box" style="margin-top: 20px;" open>
+        <summary class="label" style="cursor: pointer; list-style: none;">Tools</summary>
         <div class="toolbar" style="margin: 12px 0 16px;">
           <button class="copy" id="copyBtn">Copy to Drive</button>
           <button class="ghost" id="topicsBtn">List Topics</button>
           <button class="ghost" id="checkCpuFreqBtn">Check CPU Freq</button>
           <button class="ghost" id="setCpuFreqMaxBtn">Set CPU Max</button>
         </div>
-        <span class="label">Copy Result</span>
-        <pre class="logs" id="copyLogs" style="min-height: 100px; max-height: 200px; margin-bottom: 16px;">No copy has run yet.</pre>
-        <span class="label">ROS 2 Topic List</span>
-        <pre class="logs" id="topicLogs" style="min-height: 100px; max-height: 200px; margin-bottom: 16px;">No topic list has run yet.</pre>
-        <span class="label">CPU Frequency</span>
-        <pre class="logs" id="cpuFreqLogs" style="min-height: 80px; max-height: 160px;">Press a button to read or set CPU frequency.</pre>
-      </div>
+        <pre class="logs" id="toolLogs" style="min-height: 120px; max-height: 260px;">No tool has run yet.</pre>
+      </details>
     </div>
   </div>
 
@@ -345,9 +340,7 @@ INDEX_HTML = """<!doctype html>
     const composeFile = document.getElementById("composeFile");
     const checkCpuFreqBtn = document.getElementById("checkCpuFreqBtn");
     const setCpuFreqMaxBtn = document.getElementById("setCpuFreqMaxBtn");
-    const cpuFreqLogs = document.getElementById("cpuFreqLogs");
-    const copyLogs = document.getElementById("copyLogs");
-    const topicLogs = document.getElementById("topicLogs");
+    const toolLogs = document.getElementById("toolLogs");
     const logs = document.getElementById("logs");
     const alphaBaisBias = document.getElementById("alphaBaisBias");
     const rangeFixA0 = document.getElementById("rangeFixA0");
@@ -441,11 +434,11 @@ INDEX_HTML = """<!doctype html>
       try {
         const data = await fetchJson("/api/topics", { method: "POST" });
         const output = [data.stdout, data.stderr].filter(Boolean).join("\\n\\n") || "No topics found.";
-        topicLogs.textContent = output;
-        topicLogs.scrollTop = topicLogs.scrollHeight;
+        toolLogs.textContent = output;
+        toolLogs.scrollTop = toolLogs.scrollHeight;
         setMessage(data.stdout || "Topic list loaded.");
       } catch (error) {
-        topicLogs.textContent = error.message;
+        toolLogs.textContent = error.message;
         setMessage(error.message, true);
       } finally {
         setActionState(false);
@@ -561,10 +554,10 @@ INDEX_HTML = """<!doctype html>
 
     startBtn.addEventListener("click", () => runAction("/api/start"));
     stopBtn.addEventListener("click", () => runAction("/api/stop"));
-    copyBtn.addEventListener("click", () => runAction("/api/copy", copyLogs));
+    copyBtn.addEventListener("click", () => runAction("/api/copy", toolLogs));
     topicsBtn.addEventListener("click", listTopics);
-    checkCpuFreqBtn.addEventListener("click", () => runAction("/api/cpu_freq", cpuFreqLogs));
-    setCpuFreqMaxBtn.addEventListener("click", () => runAction("/api/cpu_freq_max", cpuFreqLogs));
+    checkCpuFreqBtn.addEventListener("click", () => runAction("/api/cpu_freq", toolLogs));
+    setCpuFreqMaxBtn.addEventListener("click", () => runAction("/api/cpu_freq_max", toolLogs));
     uniLogBtn.addEventListener("click", async () => {
       setLogContainer("UniLidarSdk");
       await refreshLogs();
