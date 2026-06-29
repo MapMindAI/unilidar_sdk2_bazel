@@ -390,7 +390,7 @@ def parse_args(argv: List[str]) -> Tuple[argparse.Namespace, List[str]]:
     )
     parser.add_argument("--port", default="/dev/ttyACM0", help="USB serial device.")
     parser.add_argument("--baudrate", type=int, default=115200, help="Serial baudrate.")
-    parser.add_argument("--timeout", type=float, default=1.0, help="Serial read timeout in seconds.")
+    parser.add_argument("--timeout", type=float, default=0.1, help="Serial read timeout in seconds.")
     parser.add_argument("--frame-id", default="rtk", help="ROS frame_id for GNSS messages.")
     parser.add_argument("--fix-topic", default="/rtk/fix", help="sensor_msgs/NavSatFix topic.")
     parser.add_argument("--qos-depth", type=int, default=20, help="Publisher queue depth.")
@@ -474,6 +474,7 @@ def main(argv: Optional[List[str]] = None) -> int:
                 if not raw:
                     continue
                 line = raw.decode("ascii", errors="replace").strip()
+                node.get_logger().info(f"received: {line}")
                 parsed = split_nmea(line)
                 if parsed is None:
                     node.get_logger().debug(f"Ignoring invalid NMEA: {line}")
