@@ -224,7 +224,7 @@ INDEX_HTML = """<!doctype html>
   <div class="layout">
     <div class="card">
       <h1>UniLidar Remote Control</h1>
-      <p>Start or stop the compose stack and watch the live debug output from <code>UniLidarSdk</code>.</p>
+      <p>Start or stop the compose stack and watch the live debug output from the collection containers.</p>
 
       <details class="status-box" style="margin-bottom: 20px;">
         <summary class="panel-title" style="cursor: pointer; list-style: none;">Calibration Parameters</summary>
@@ -290,6 +290,7 @@ INDEX_HTML = """<!doctype html>
         <div class="toolbar" style="margin: 12px 0 0;">
           <button class="ghost toggle-active" id="uniLogBtn">UniLidarSdk</button>
           <button class="ghost" id="recorderLogBtn">Recorder</button>
+          <button class="ghost" id="rtkLogBtn">RtkPublisher</button>
         </div>
       </div>
 
@@ -323,6 +324,7 @@ INDEX_HTML = """<!doctype html>
     const refreshBtn = document.getElementById("refreshBtn");
     const uniLogBtn = document.getElementById("uniLogBtn");
     const recorderLogBtn = document.getElementById("recorderLogBtn");
+    const rtkLogBtn = document.getElementById("rtkLogBtn");
     const defaultParamsBtn = document.getElementById("defaultParamsBtn");
     const zeroParamsBtn = document.getElementById("zeroParamsBtn");
     const saveParamsBtn = document.getElementById("saveParamsBtn");
@@ -369,15 +371,16 @@ INDEX_HTML = """<!doctype html>
       refreshBtn.disabled = busy;
       uniLogBtn.disabled = busy;
       recorderLogBtn.disabled = busy;
+      rtkLogBtn.disabled = busy;
       saveParamsBtn.disabled = busy;
       saveBagSuffixBtn.disabled = busy;
     }
 
     function setLogContainer(name) {
       logContainer = name;
-      const isUni = name === "UniLidarSdk";
-      uniLogBtn.className = "ghost " + (isUni ? "toggle-active" : "");
-      recorderLogBtn.className = "ghost " + (!isUni ? "toggle-active" : "");
+      uniLogBtn.className = "ghost " + (name === "UniLidarSdk" ? "toggle-active" : "");
+      recorderLogBtn.className = "ghost " + (name === "Recorder" ? "toggle-active" : "");
+      rtkLogBtn.className = "ghost " + (name === "RtkPublisher" ? "toggle-active" : "");
     }
 
     async function refreshStatus() {
@@ -551,6 +554,10 @@ INDEX_HTML = """<!doctype html>
     });
     recorderLogBtn.addEventListener("click", async () => {
       setLogContainer("Recorder");
+      await refreshLogs();
+    });
+    rtkLogBtn.addEventListener("click", async () => {
+      setLogContainer("RtkPublisher");
       await refreshLogs();
     });
     defaultParamsBtn.addEventListener("click", () => setPresetAndSave(defaultCalibrationParams));
