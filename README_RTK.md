@@ -140,6 +140,89 @@ Alternatively, open `rtk_viewer.html` directly and use the **"Load RTK .txt"** b
 
 ---
 
+## Live ROS 2 Publisher
+
+The USB-C interface exposes live **NMEA 0183** serial data. This repo includes
+[`tools/rtk_ros_publisher.py`](tools/rtk_ros_publisher.py), a ROS 2 Humble
+publisher for the WTRTK-960H.
+
+Install runtime dependencies:
+
+```bash
+sudo apt install python3-serial
+source /opt/ros/humble/setup.bash
+```
+
+Run:
+
+```bash
+/usr/bin/python3 tools/rtk_ros_publisher.py \
+  --port=/dev/ttyACM0 \
+  --baudrate=115200 \
+  --frame-id=rtk
+```
+
+Run with an NTRIP/RTK correction server:
+
+```bash
+export RTK_NTRIP_PASSWORD='your-password'
+
+/usr/bin/python3 tools/rtk_ros_publisher.py \
+  --port=/dev/ttyACM0 \
+  --baudrate=115200 \
+  --frame-id=rtk \
+  --ntrip-host=your.caster.example.com \
+  --ntrip-port=2101 \
+  --ntrip-mountpoint=YOUR_MOUNTPOINT \
+  --ntrip-user=your-user \
+  --ntrip-password-env=RTK_NTRIP_PASSWORD
+```
+
+The script logs into the NTRIP caster, sends live GGA rover-position updates
+to the caster, receives RTCM correction bytes, and writes those bytes back to
+the WTRTK-960H over the same USB serial link. Use `--ntrip-tls` if your caster
+requires TLS.
+
+Published topic:
+
+| Topic | Type | Source |
+|-------|------|--------|
+| `/rtk/fix` | `sensor_msgs/msg/NavSatFix` | NMEA GGA |
+
+Each published fix is also logged with fix status, latitude, longitude,
+satellite count, and altitude.
+
+Useful check:
+
+```bash
+ros2 topic echo /rtk/fix
+```
+
+Docker compose service:
+
+```bash
+export RTK_SERIAL_PORT=/dev/ttyUSB0
+export NTRIP_HOST=your.caster.example.com
+export NTRIP_PORT=2101
+export NTRIP_MOUNTPOINT=YOUR_MOUNTPOINT
+export NTRIP_USER=your-user
+export NTRIP_PASSWORD='your-password'
+
+bash docker_compose/unilidar_mapping/arm64_start_unilidar.sh
+```
+
+The compose file starts `RtkPublisher` and records `/rtk/fix` in the rosbag
+alongside the LiDAR topics. Leave `NTRIP_HOST` empty to publish uncorrected GNSS
+fixes without NTRIP.
+
+If the USB device appears as another port, list candidates with:
+
+```bash
+ls /dev/ttyACM* /dev/ttyUSB*
+```
+
+---
+
 ## Applications
 
 - Ground-truth trajectory for LiDAR-inertial odometry evaluation
