@@ -31,7 +31,19 @@ STOP_SCRIPT = Path(
 COPY_SCRIPT = Path(
     os.environ.get(
         "UNILIDAR_COPY_SCRIPT",
-        REPO_ROOT / "docker_compose" / "unilidar_mapping" / "copy_to_drive.sh",
+        REPO_ROOT / "tools" / "copy_to_drive.sh",
+    )
+)
+CHECK_CPU_FREQ_SCRIPT = Path(
+    os.environ.get(
+        "UNILIDAR_CHECK_CPU_FREQ_SCRIPT",
+        REPO_ROOT / "tools" / "check_current_cpu_freq.sh",
+    )
+)
+SET_CPU_FREQ_MAX_SCRIPT = Path(
+    os.environ.get(
+        "UNILIDAR_SET_CPU_FREQ_MAX_SCRIPT",
+        REPO_ROOT / "tools" / "set_cpu_freq_max.sh",
     )
 )
 COMPOSE_PARAM_NAMES = ("alpha_bais_bias", "range_fix_a0", "range_fix_a1")
@@ -313,6 +325,15 @@ INDEX_HTML = """<!doctype html>
         <span class="label">ROS 2 Topic List</span>
         <pre class="logs" id="topicLogs" style="min-height: 180px; max-height: 260px; margin-top: 0;">No topic list has run yet.</pre>
       </div>
+
+      <div class="status-box" style="margin-top: 20px;">
+        <span class="label">CPU Frequency</span>
+        <div class="toolbar" style="margin: 12px 0 0;">
+          <button class="ghost" id="checkCpuFreqBtn">Check CPU Freq</button>
+          <button class="ghost" id="setCpuFreqMaxBtn">Set CPU Max</button>
+        </div>
+        <pre class="logs" id="cpuFreqLogs" style="min-height: 100px; max-height: 200px; margin-top: 12px;">Press a button to read or set CPU frequency.</pre>
+      </div>
     </div>
   </div>
 
@@ -333,6 +354,9 @@ INDEX_HTML = """<!doctype html>
     const runningStatus = document.getElementById("runningStatus");
     const containerName = document.getElementById("containerName");
     const composeFile = document.getElementById("composeFile");
+    const checkCpuFreqBtn = document.getElementById("checkCpuFreqBtn");
+    const setCpuFreqMaxBtn = document.getElementById("setCpuFreqMaxBtn");
+    const cpuFreqLogs = document.getElementById("cpuFreqLogs");
     const copyLogs = document.getElementById("copyLogs");
     const topicLogs = document.getElementById("topicLogs");
     const logs = document.getElementById("logs");
@@ -374,6 +398,8 @@ INDEX_HTML = """<!doctype html>
       rtkLogBtn.disabled = busy;
       saveParamsBtn.disabled = busy;
       saveBagSuffixBtn.disabled = busy;
+      checkCpuFreqBtn.disabled = busy;
+      setCpuFreqMaxBtn.disabled = busy;
     }
 
     function setLogContainer(name) {
@@ -548,6 +574,8 @@ INDEX_HTML = """<!doctype html>
     stopBtn.addEventListener("click", () => runAction("/api/stop"));
     copyBtn.addEventListener("click", () => runAction("/api/copy", copyLogs));
     topicsBtn.addEventListener("click", listTopics);
+    checkCpuFreqBtn.addEventListener("click", () => runAction("/api/cpu_freq", cpuFreqLogs));
+    setCpuFreqMaxBtn.addEventListener("click", () => runAction("/api/cpu_freq_max", cpuFreqLogs));
     uniLogBtn.addEventListener("click", async () => {
       setLogContainer("UniLidarSdk");
       await refreshLogs();
@@ -838,6 +866,26 @@ class UniLidarHandler(BaseHTTPRequestHandler):
                     HTTPStatus.BAD_GATEWAY,
                 )
             return
+        if parsed.path == "/api/cpu_freq":
+            result = run_command([str(CHECK_CPU_FREQ_SCRIPT)])
+            if result["returncode"] == 0:
+                self._write_json(result)
+            else:
+                self._write_json(
+                    format_command_error(result, "Failed to read CPU frequency."),
+                    HTTPStatus.BAD_GATEWAY,
+                )
+            return
+        if parsed.path == "/api/cpu_freq_max":
+            result = run_command([str(SET_CPU_FREQ_MAX_SCRIPT)])
+            if result["returncode"] == 0:
+                self._write_json(result)
+            else:
+                self._write_json(
+                    format_command_error(result, "Failed to set CPU frequency to max."),
+                    HTTPStatus.BAD_GATEWAY,
+                )
+            return
         if parsed.path == "/api/topics":
             result = run_command(
                 [
@@ -901,6 +949,10 @@ def main():
         raise FileNotFoundError(f"stop script not found: {STOP_SCRIPT}")
     if not COPY_SCRIPT.is_file():
         raise FileNotFoundError(f"copy script not found: {COPY_SCRIPT}")
+    if not CHECK_CPU_FREQ_SCRIPT.is_file():
+        raise FileNotFoundError(f"check cpu freq script not found: {CHECK_CPU_FREQ_SCRIPT}")
+    if not SET_CPU_FREQ_MAX_SCRIPT.is_file():
+        raise FileNotFoundError(f"set cpu freq max script not found: {SET_CPU_FREQ_MAX_SCRIPT}")
 
     server = ThreadingHTTPServer((DEFAULT_HOST, DEFAULT_PORT), UniLidarHandler)
     print(
