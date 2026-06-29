@@ -17,7 +17,7 @@ Three solution states appear in the output:
 ## Product — WTRTK-960H
 
 **Manufacturer:** 深圳维特智能科技有限公司 (WitMotion ShenZhen Co., Ltd.)  
-**Model:** WTRTK-960H  
+**Model:** [WTRTK-960H产品资料](https://wit-motion.yuque.com/wumwnr/docs/isgpx42utz06df8t)
 **Purchase:** [Tmall product page](https://detail.tmall.com/item.htm?from=detail&id=935624628635&mi_id=00008K2JT8Mq5BgEpJ4TTt9aTxbyj5R2_PaubFyVEZBoSlw&spm=tbpc.orderdetail.suborder_itemtitle.1.48866aa60VQGuR)  
 **Official Docs:** [WTRTK-960H 连接手机APP — 语雀](https://wit-motion.yuque.com/wumwnr/docs/ghvamu57709huc22?singleDoc#)
 
