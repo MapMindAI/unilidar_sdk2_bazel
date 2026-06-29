@@ -96,6 +96,11 @@ services:
           sleep 1
         done
         source /opt/ros/humble/setup.bash
+        if ! /usr/bin/python3 -c 'import serial' >/dev/null 2>&1; then
+          echo 'Installing missing dependency: python3-serial'
+          apt-get update
+          DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends python3-serial
+        fi
 
         NTRIP_ARGS=()
         if [ -n "$${NTRIP_HOST:-}" ]; then
