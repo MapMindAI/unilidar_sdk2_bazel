@@ -101,10 +101,13 @@ def rtk_start():
         if _rtk_proc is not None and _rtk_proc.poll() is None:
             return {"error": "RTK publisher is already running", "pid": _rtk_proc.pid}
         env = _load_rtk_env()
+        env_file = shlex.quote(str(RTK_ENV_FILE))
         cmd = [
             "bash",
             "-c",
-            f"source /opt/ros/jazzy/setup.bash && exec /usr/bin/python3 {RTK_PUBLISHER_SCRIPT}",
+            f"[ -r {env_file} ] && {{ set -a; . {env_file}; set +a; }}; "
+            f"source /opt/ros/jazzy/setup.bash && "
+            f"exec /usr/bin/python3 {RTK_PUBLISHER_SCRIPT}",
         ]
         with _rtk_log_lock:
             _rtk_log_buf.clear()
