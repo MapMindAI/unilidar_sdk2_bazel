@@ -104,7 +104,7 @@ def rtk_start():
         cmd = [
             "bash",
             "-c",
-            f"source ~/.bashrc && exec /usr/bin/python3 {RTK_PUBLISHER_SCRIPT}",
+            f"source /opt/ros/jazzy/setup.bash && exec /usr/bin/python3 {RTK_PUBLISHER_SCRIPT}",
         ]
         with _rtk_log_lock:
             _rtk_log_buf.clear()
