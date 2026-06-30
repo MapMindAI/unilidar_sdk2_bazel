@@ -1,10 +1,12 @@
 #!/usr/bin/env python3
+import collections
 import json
 import os
 import re
 import shlex
 import subprocess
 import sys
+import threading
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -46,6 +48,13 @@ SET_CPU_FREQ_MAX_SCRIPT = Path(
         REPO_ROOT / "tools" / "set_cpu_freq_max.sh",
     )
 )
+RTK_PUBLISHER_SCRIPT = Path(
+    os.environ.get(
+        "UNILIDAR_RTK_PUBLISHER_SCRIPT",
+        REPO_ROOT / "tools" / "rtk_ros_publisher.py",
+    )
+)
+RTK_ENV_FILE = Path(os.environ.get("UNILIDAR_RTK_ENV_FILE", "/etc/unilidar/rtk.env"))
 COMPOSE_PARAM_NAMES = ("alpha_bais_bias", "range_fix_a0", "range_fix_a1")
 RECORDER_BAG_SUFFIX_RE = re.compile(r'(?m)^(?P<prefix>\s*BAG_NAME_SUFFIX=")(?P<suffix>[^"]*)(?P<suffix_end>")\s*$')
 
@@ -54,6 +63,99 @@ PARAM_LINE_RE = re.compile(
     r"(?P<mid1>\s+--range_fix_a0=)(?P<range_fix_a0>\S+)"
     r"(?P<mid2>\s+(?:--)?range_fix_a1=)(?P<range_fix_a1>\S+)"
 )
+
+_rtk_lock = threading.Lock()
+_rtk_proc = None
+_rtk_log_lock = threading.Lock()
+_rtk_log_buf: collections.deque = collections.deque(maxlen=500)
+
+
+def _rtk_reader(proc):
+    try:
+        for line in proc.stdout:
+            with _rtk_log_lock:
+                _rtk_log_buf.append(line.rstrip("\n"))
+    except Exception:
+        pass
+    proc.wait()
+
+
+def _load_rtk_env():
+    env = os.environ.copy()
+    if RTK_ENV_FILE.is_file():
+        try:
+            for raw in RTK_ENV_FILE.read_text(encoding="utf-8").splitlines():
+                line = raw.strip()
+                if not line or line.startswith("#") or "=" not in line:
+                    continue
+                k, _, v = line.partition("=")
+                env.setdefault(k.strip(), v.strip())
+        except Exception:
+            pass
+    return env
+
+
+def rtk_start():
+    global _rtk_proc
+    with _rtk_lock:
+        if _rtk_proc is not None and _rtk_proc.poll() is None:
+            return {"error": "RTK publisher is already running", "pid": _rtk_proc.pid}
+        env = _load_rtk_env()
+        cmd = [
+            "bash",
+            "-c",
+            f"source /opt/ros/humble/setup.bash && exec /usr/bin/python3 {RTK_PUBLISHER_SCRIPT}",
+        ]
+        with _rtk_log_lock:
+            _rtk_log_buf.clear()
+        try:
+            proc = subprocess.Popen(
+                cmd,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+                env=env,
+                cwd=str(REPO_ROOT),
+            )
+        except Exception as error:
+            return {"error": str(error)}
+        _rtk_proc = proc
+        threading.Thread(target=_rtk_reader, args=(proc,), daemon=True).start()
+        return {"stdout": f"RTK publisher started (pid={proc.pid})", "pid": proc.pid}
+
+
+def rtk_stop():
+    global _rtk_proc
+    with _rtk_lock:
+        if _rtk_proc is None or _rtk_proc.poll() is not None:
+            return {"error": "RTK publisher is not running"}
+        _rtk_proc.terminate()
+        try:
+            _rtk_proc.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            _rtk_proc.kill()
+            _rtk_proc.wait()
+        pid = _rtk_proc.pid
+        _rtk_proc = None
+        return {"stdout": f"RTK publisher stopped (pid={pid})"}
+
+
+def rtk_status():
+    with _rtk_lock:
+        running = _rtk_proc is not None and _rtk_proc.poll() is None
+        pid = _rtk_proc.pid if running and _rtk_proc else None
+    return {"running": running, "pid": pid}
+
+
+def rtk_logs(tail=200):
+    with _rtk_log_lock:
+        lines = list(_rtk_log_buf)[-tail:]
+    status = rtk_status()
+    return {
+        "logs": "\n".join(lines) or "RTK publisher has not produced output yet.",
+        "running": status["running"],
+        "pid": status["pid"],
+    }
 
 
 INDEX_HTML = """<!doctype html>
@@ -287,12 +389,18 @@ INDEX_HTML = """<!doctype html>
           <span class="label">Compose File</span>
           <div class="value" id="composeFile"></div>
         </div>
+        <div class="status-box">
+          <span class="label">RTK Publisher</span>
+          <div class="value" id="rtkRunningStatus">Unknown</div>
+        </div>
       </div>
 
       <div class="toolbar">
         <button class="start" id="startBtn">Start UniLidar</button>
         <button class="stop" id="stopBtn">Stop UniLidar</button>
         <button class="ghost" id="refreshBtn">Refresh Logs</button>
+        <button class="start" id="startRtkBtn" style="background:#1f6feb;">Start RTK</button>
+        <button class="stop" id="stopRtkBtn">Stop RTK</button>
       </div>
 
       <div class="message" id="message"></div>
@@ -340,6 +448,9 @@ INDEX_HTML = """<!doctype html>
     const composeFile = document.getElementById("composeFile");
     const checkCpuFreqBtn = document.getElementById("checkCpuFreqBtn");
     const setCpuFreqMaxBtn = document.getElementById("setCpuFreqMaxBtn");
+    const startRtkBtn = document.getElementById("startRtkBtn");
+    const stopRtkBtn = document.getElementById("stopRtkBtn");
+    const rtkRunningStatus = document.getElementById("rtkRunningStatus");
     const toolLogs = document.getElementById("toolLogs");
     const logs = document.getElementById("logs");
     const alphaBaisBias = document.getElementById("alphaBaisBias");
@@ -372,6 +483,8 @@ INDEX_HTML = """<!doctype html>
       actionInFlight = busy;
       startBtn.disabled = busy;
       stopBtn.disabled = busy;
+      startRtkBtn.disabled = busy;
+      stopRtkBtn.disabled = busy;
       copyBtn.disabled = busy;
       topicsBtn.disabled = busy;
       refreshBtn.disabled = busy;
@@ -467,7 +580,12 @@ INDEX_HTML = """<!doctype html>
 
     async function refreshLogs() {
       try {
-        const data = await fetchJson("/api/logs?tail=50&container=" + encodeURIComponent(logContainer));
+        let data;
+        if (logContainer === "RtkPublisher") {
+          data = await fetchJson("/api/rtk/logs?tail=200");
+        } else {
+          data = await fetchJson("/api/logs?tail=50&container=" + encodeURIComponent(logContainer));
+        }
         logs.textContent = data.logs || "No logs yet.";
         logs.scrollTop = logs.scrollHeight;
       } catch (error) {
@@ -554,8 +672,56 @@ INDEX_HTML = """<!doctype html>
       }
     }
 
+    async function refreshRtkStatus() {
+      try {
+        const data = await fetchJson("/api/rtk/status");
+        const running = Boolean(data.running);
+        rtkRunningStatus.textContent = running
+          ? "Running" + (data.pid ? ` (pid=${data.pid})` : "")
+          : "Stopped";
+        rtkRunningStatus.className = "value " + (running ? "ok" : "bad");
+      } catch (err) {
+        rtkRunningStatus.textContent = "Unknown";
+        rtkRunningStatus.className = "value";
+      }
+    }
+
+    async function startRtk() {
+      if (actionInFlight) return;
+      setActionState(true);
+      setMessage("Starting RTK publisher...");
+      try {
+        const data = await fetchJson("/api/rtk/start", { method: "POST" });
+        setMessage(data.stdout || "RTK publisher started.");
+      } catch (err) {
+        setMessage(err.message, true);
+      } finally {
+        setActionState(false);
+        await refreshRtkStatus();
+        if (logContainer === "RtkPublisher") await refreshLogs();
+      }
+    }
+
+    async function stopRtk() {
+      if (actionInFlight) return;
+      setActionState(true);
+      setMessage("Stopping RTK publisher...");
+      try {
+        const data = await fetchJson("/api/rtk/stop", { method: "POST" });
+        setMessage(data.stdout || "RTK publisher stopped.");
+      } catch (err) {
+        setMessage(err.message, true);
+      } finally {
+        setActionState(false);
+        await refreshRtkStatus();
+        if (logContainer === "RtkPublisher") await refreshLogs();
+      }
+    }
+
     startBtn.addEventListener("click", () => runAction("/api/start"));
     stopBtn.addEventListener("click", () => runAction("/api/stop"));
+    startRtkBtn.addEventListener("click", startRtk);
+    stopRtkBtn.addEventListener("click", stopRtk);
     copyBtn.addEventListener("click", () => runAction("/api/copy", toolLogs));
     topicsBtn.addEventListener("click", listTopics);
     checkCpuFreqBtn.addEventListener("click", () => runAction("/api/cpu_freq", toolLogs));
@@ -588,11 +754,13 @@ INDEX_HTML = """<!doctype html>
     });
 
     refreshStatus();
+    refreshRtkStatus();
     setLogContainer("UniLidarSdk");
     refreshParameters();
     refreshBagSuffix();
     refreshLogs();
     setInterval(refreshStatus, 3000);
+    setInterval(refreshRtkStatus, 3000);
     setInterval(refreshLogs, 2000);
   </script>
 </body>
@@ -816,6 +984,18 @@ class UniLidarHandler(BaseHTTPRequestHandler):
             except Exception as error:
                 self._write_json({"error": str(error)}, HTTPStatus.BAD_GATEWAY)
             return
+        if parsed.path == "/api/rtk/status":
+            self._write_json(rtk_status())
+            return
+        if parsed.path == "/api/rtk/logs":
+            query = parse_qs(parsed.query)
+            raw_tail = query.get("tail", ["200"])[0]
+            try:
+                tail = max(1, min(1000, int(raw_tail)))
+            except ValueError:
+                tail = 200
+            self._write_json(rtk_logs(tail))
+            return
         self._write_json({"error": "Not found"}, HTTPStatus.NOT_FOUND)
 
     def do_POST(self):
@@ -922,6 +1102,20 @@ class UniLidarHandler(BaseHTTPRequestHandler):
                 self._write_json({"stdout": "Bag postfix saved.", "bag_name_suffix": bag_name_suffix})
             except Exception as error:
                 self._write_json({"error": str(error)}, HTTPStatus.BAD_GATEWAY)
+            return
+        if parsed.path == "/api/rtk/start":
+            result = rtk_start()
+            if "error" in result:
+                self._write_json(result, HTTPStatus.BAD_GATEWAY)
+            else:
+                self._write_json(result)
+            return
+        if parsed.path == "/api/rtk/stop":
+            result = rtk_stop()
+            if "error" in result:
+                self._write_json(result, HTTPStatus.BAD_GATEWAY)
+            else:
+                self._write_json(result)
             return
         self._write_json({"error": "Not found"}, HTTPStatus.NOT_FOUND)
 
