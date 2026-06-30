@@ -1,5 +1,5 @@
 #!/usr/bin/python3
-"""Publish WTRTK-960H USB NMEA data as ROS 2 topics."""
+"""Publish RTK GPS NMEA data as ROS 2 NavSatFix with optional NTRIP corrections."""
 
 import argparse
 import base64
@@ -25,159 +25,17 @@ from rclpy.node import Node
 from sensor_msgs.msg import NavSatFix, NavSatStatus
 
 
-class NtripClient:
-    def __init__(
-        self,
-        node: Node,
-        args: argparse.Namespace,
-        serial_port: serial.Serial,
-        serial_write_lock: threading.Lock,
-    ):
-        self.node = node
-        self.args = args
-        self.serial_port = serial_port
-        self.serial_write_lock = serial_write_lock
-        self.stop_event = threading.Event()
-        self.thread: Optional[threading.Thread] = None
-        self.latest_gga: Optional[str] = None
-        self.latest_gga_lock = threading.Lock()
-
-    def start(self) -> None:
-        self.thread = threading.Thread(target=self.run, name="ntrip_client", daemon=True)
-        self.thread.start()
-
-    def stop(self) -> None:
-        self.stop_event.set()
-        if self.thread is not None:
-            self.thread.join(timeout=3.0)
-
-    def update_gga(self, raw_line: str) -> None:
-        with self.latest_gga_lock:
-            self.latest_gga = raw_line
-
-    def run(self) -> None:
-        while not self.stop_event.is_set() and rclpy.ok():
-            try:
-                self.connect_and_forward()
-            except Exception as exc:
-                self.node.get_logger().warning(f"NTRIP disconnected: {exc}")
-            self.stop_event.wait(self.args.ntrip_reconnect_sec)
-
-    def connect_socket(self) -> socket.socket:
-        sock = socket.create_connection(
-            (self.args.ntrip_host, self.args.ntrip_port),
-            timeout=self.args.ntrip_connect_timeout,
-        )
-        if self.args.ntrip_tls:
-            context = ssl.create_default_context()
-            sock = context.wrap_socket(sock, server_hostname=self.args.ntrip_host)
-        sock.settimeout(self.args.ntrip_response_timeout)
-        return sock
-
-    def request_headers(self) -> bytes:
-        mountpoint = self.args.ntrip_mountpoint.lstrip("/")
-        request = [
-            f"GET /{mountpoint} HTTP/1.0",
-            f"Host: {self.args.ntrip_host}:{self.args.ntrip_port}",
-            "User-Agent: NTRIP rtk_ros_publisher/1.0",
-            "Ntrip-Version: Ntrip/2.0",
-            "Accept: */*",
-            "Connection: close",
-        ]
-        password = self.args.ntrip_password
-        if self.args.ntrip_password_env:
-            password = os.environ.get(self.args.ntrip_password_env, password)
-        if self.args.ntrip_user or password:
-            token = base64.b64encode(f"{self.args.ntrip_user}:{password}".encode("utf-8"))
-            request.append(f"Authorization: Basic {token.decode('ascii')}")
-        request.extend(["", ""])
-        return "\r\n".join(request).encode("ascii")
-
-    def read_response_header(self, sock: socket.socket) -> Tuple[str, bytes]:
-        data = b""
-        while b"\r\n\r\n" not in data:
-            try:
-                chunk = sock.recv(4096)
-            except socket.timeout as exc:
-                raise RuntimeError(
-                    "timed out waiting for NTRIP response header; check caster host/port, "
-                    "TLS setting, mountpoint, username/password, and network reachability"
-                ) from exc
-            if not chunk:
-                raise RuntimeError(
-                    "caster closed before response header; check host/port, TLS setting, "
-                    "mountpoint, and NTRIP username/password"
-                )
-            data += chunk
-            if len(data) > 16384:
-                raise RuntimeError("caster response header too large")
-        header, rest = data.split(b"\r\n\r\n", 1)
-        return header.decode("iso-8859-1", errors="replace"), rest
-
-    def send_latest_gga(self, sock: socket.socket, force: bool = False) -> bool:
-        with self.latest_gga_lock:
-            gga = self.latest_gga
-        if gga is None and self.args.ntrip_gga:
-            gga = self.args.ntrip_gga
-        if gga is None:
-            if force:
-                self.node.get_logger().warning(
-                    "NTRIP is connected, but no GGA is available yet for caster position updates"
-                )
-            return False
-        sock.sendall((gga.strip() + "\r\n").encode("ascii", errors="ignore"))
-        return True
-
-    def connect_and_forward(self) -> None:
-        with self.connect_socket() as sock:
-            sock.sendall(self.request_headers())
-            header, initial_rtcm = self.read_response_header(sock)
-            first_line = header.splitlines()[0] if header else ""
-            if not (first_line.startswith("ICY 200") or " 200 " in first_line):
-                raise RuntimeError(first_line or "unexpected empty caster response")
-
-            self.node.get_logger().info(
-                f"NTRIP connected to {self.args.ntrip_host}:{self.args.ntrip_port}/"
-                f"{self.args.ntrip_mountpoint.lstrip('/')}"
-            )
-            sent_gga = self.send_latest_gga(sock, force=True)
-            next_gga_time = time.monotonic() + (
-                self.args.ntrip_gga_interval if sent_gga else 1.0
-            )
-
-            if initial_rtcm:
-                self.write_rtcm(initial_rtcm)
-
-            sock.settimeout(self.args.ntrip_read_timeout)
-            while not self.stop_event.is_set() and rclpy.ok():
-                now = time.monotonic()
-                if now >= next_gga_time:
-                    sent_gga = self.send_latest_gga(sock)
-                    next_gga_time = now + (self.args.ntrip_gga_interval if sent_gga else 1.0)
-                try:
-                    data = sock.recv(4096)
-                except socket.timeout:
-                    continue
-                if not data:
-                    raise RuntimeError("caster closed connection")
-                self.write_rtcm(data)
-
-    def write_rtcm(self, data: bytes) -> None:
-        with self.serial_write_lock:
-            self.serial_port.write(data)
-
+# ── NMEA data types ───────────────────────────────────────────────────────────
 
 @dataclass
 class GgaFix:
-    stamp_text: str
     latitude_deg: float
     longitude_deg: float
     fix_quality: int
     satellites: int
     hdop: Optional[float]
     altitude_m: Optional[float]
-    geoid_separation_m: Optional[float]
-    differential_age_s: Optional[float]
+    geoid_sep_m: Optional[float]
 
 
 @dataclass
@@ -187,180 +45,288 @@ class GstStdDev:
     altitude_m: float
 
 
-def split_nmea(line: str) -> Optional[Tuple[str, List[str]]]:
-    line = line.strip()
-    if not line.startswith("$"):
-        return None
-    body = line[1:]
-    checksum_text = None
-    if "*" in body:
-        body, checksum_text = body.split("*", 1)
-        checksum = 0
-        for char in body:
-            checksum ^= ord(char)
-        try:
-            expected = int(checksum_text[:2], 16)
-        except ValueError:
-            return None
-        if checksum != expected:
-            return None
+# ── NMEA parsing ──────────────────────────────────────────────────────────────
 
-    fields = body.split(",")
-    if not fields or len(fields[0]) < 3:
-        return None
-    return fields[0][-3:], fields
-
-
-def parse_float(value: str) -> Optional[float]:
-    if value == "":
-        return None
+def _parse_float(v: str) -> Optional[float]:
     try:
-        return float(value)
+        return float(v) if v else None
     except ValueError:
         return None
 
 
-def parse_int(value: str) -> int:
+def _parse_int(v: str) -> int:
     try:
-        return int(value)
+        return int(v)
     except ValueError:
         return 0
 
 
-def parse_lat_lon(value: str, hemisphere: str) -> Optional[float]:
-    raw = parse_float(value)
+def _parse_lat_lon(value: str, hemi: str) -> Optional[float]:
+    raw = _parse_float(value)
     if raw is None:
         return None
-    degrees = int(raw // 100)
-    minutes = raw - degrees * 100
-    decimal = degrees + minutes / 60.0
-    if hemisphere in ("S", "W"):
-        decimal = -decimal
-    return decimal
+    deg = int(raw // 100)
+    dec = deg + (raw - deg * 100) / 60.0
+    return -dec if hemi in ("S", "W") else dec
+
+
+def _checksum_ok(line: str) -> bool:
+    if "*" not in line:
+        return True
+    body, cs = line[1:].split("*", 1)
+    calc = 0
+    for ch in body:
+        calc ^= ord(ch)
+    try:
+        return calc == int(cs[:2], 16)
+    except ValueError:
+        return False
+
+
+def parse_sentence(line: str) -> Optional[Tuple[str, List[str]]]:
+    """Return (sentence_type, fields) for a valid NMEA line, or None."""
+    line = line.strip()
+    if not line.startswith("$") or not _checksum_ok(line):
+        return None
+    fields = line[1:].split("*")[0].split(",")
+    if not fields or len(fields[0]) < 3:
+        return None
+    return fields[0][-3:], fields  # last 3 chars: "GGA", "GST", etc.
 
 
 def parse_gga(fields: List[str]) -> Optional[GgaFix]:
     if len(fields) < 10:
         return None
-    latitude = parse_lat_lon(fields[2], fields[3])
-    longitude = parse_lat_lon(fields[4], fields[5])
-    if latitude is None or longitude is None:
+    lat = _parse_lat_lon(fields[2], fields[3])
+    lon = _parse_lat_lon(fields[4], fields[5])
+    if lat is None or lon is None:
         return None
     return GgaFix(
-        stamp_text=fields[1],
-        latitude_deg=latitude,
-        longitude_deg=longitude,
-        fix_quality=parse_int(fields[6]),
-        satellites=parse_int(fields[7]),
-        hdop=parse_float(fields[8]),
-        altitude_m=parse_float(fields[9]),
-        geoid_separation_m=parse_float(fields[11]) if len(fields) > 11 else None,
-        differential_age_s=parse_float(fields[13]) if len(fields) > 13 else None,
+        latitude_deg=lat,
+        longitude_deg=lon,
+        fix_quality=_parse_int(fields[6]),
+        satellites=_parse_int(fields[7]),
+        hdop=_parse_float(fields[8]),
+        altitude_m=_parse_float(fields[9]),
+        geoid_sep_m=_parse_float(fields[11]) if len(fields) > 11 else None,
     )
 
 
 def parse_gst(fields: List[str]) -> Optional[GstStdDev]:
     if len(fields) < 9:
         return None
-    latitude_std = parse_float(fields[6])
-    longitude_std = parse_float(fields[7])
-    altitude_std = parse_float(fields[8])
-    if latitude_std is None or longitude_std is None or altitude_std is None:
+    lat_s = _parse_float(fields[6])
+    lon_s = _parse_float(fields[7])
+    alt_s = _parse_float(fields[8])
+    if lat_s is None or lon_s is None or alt_s is None:
         return None
-    return GstStdDev(latitude_m=latitude_std, longitude_m=longitude_std, altitude_m=altitude_std)
+    return GstStdDev(latitude_m=lat_s, longitude_m=lon_s, altitude_m=alt_s)
 
 
-def fix_quality_to_status(fix_quality: int) -> int:
-    if fix_quality <= 0:
+# ── Fix quality helpers ───────────────────────────────────────────────────────
+
+_FIX_LABELS: Dict[int, str] = {
+    0: "invalid", 1: "single", 2: "dgps", 4: "rtk_fixed", 5: "rtk_float"
+}
+
+
+def fix_label(q: int) -> str:
+    return _FIX_LABELS.get(q, f"quality_{q}")
+
+
+def fix_status(q: int) -> int:
+    if q <= 0:
         return NavSatStatus.STATUS_NO_FIX
-    if fix_quality in (2, 4, 5):
+    if q in (2, 4, 5):
         return NavSatStatus.STATUS_GBAS_FIX
     return NavSatStatus.STATUS_FIX
 
 
-def fix_quality_label(fix_quality: int) -> str:
-    labels: Dict[int, str] = {0: "invalid", 1: "single", 2: "dgps", 4: "rtk_fixed", 5: "rtk_float"}
-    return labels.get(fix_quality, f"quality_{fix_quality}")
-
-
-def covariance_from_quality(fix_quality: int, hdop: Optional[float], gst: Optional[GstStdDev]) -> Tuple[List[float], int]:
+def position_covariance(
+    q: int, hdop: Optional[float], gst: Optional[GstStdDev]
+) -> Tuple[List[float], int]:
     if gst is not None:
-        return (
-            [
-                gst.latitude_m**2,
-                0.0,
-                0.0,
-                0.0,
-                gst.longitude_m**2,
-                0.0,
-                0.0,
-                0.0,
-                gst.altitude_m**2,
-            ],
-            NavSatFix.COVARIANCE_TYPE_DIAGONAL_KNOWN,
-        )
-
-    if fix_quality <= 0:
-        return ([0.0] * 9, NavSatFix.COVARIANCE_TYPE_UNKNOWN)
-
-    if fix_quality == 4:
-        horizontal_std_m, vertical_std_m = 0.02, 0.04
-    elif fix_quality == 5:
-        horizontal_std_m, vertical_std_m = 0.25, 0.50
-    elif fix_quality == 2:
-        horizontal_std_m, vertical_std_m = 0.40, 0.80
+        cov = [gst.latitude_m**2, 0, 0, 0, gst.longitude_m**2, 0, 0, 0, gst.altitude_m**2]
+        return cov, NavSatFix.COVARIANCE_TYPE_DIAGONAL_KNOWN
+    if q <= 0:
+        return [0.0] * 9, NavSatFix.COVARIANCE_TYPE_UNKNOWN
+    if q == 4:
+        h, v = 0.02, 0.04
+    elif q == 5:
+        h, v = 0.25, 0.50
+    elif q == 2:
+        h, v = 0.40, 0.80
     else:
-        horizontal_std_m, vertical_std_m = 1.50, 2.50
-
-    if hdop is not None and fix_quality not in (4, 5):
-        horizontal_std_m *= max(hdop, 1.0)
-
-    return (
-        [
-            horizontal_std_m**2,
-            0.0,
-            0.0,
-            0.0,
-            horizontal_std_m**2,
-            0.0,
-            0.0,
-            0.0,
-            vertical_std_m**2,
-        ],
-        NavSatFix.COVARIANCE_TYPE_APPROXIMATED,
-    )
+        h, v = 1.50, 2.50
+    if hdop is not None and q not in (4, 5):
+        h *= max(hdop, 1.0)
+    return [h**2, 0, 0, 0, h**2, 0, 0, 0, v**2], NavSatFix.COVARIANCE_TYPE_APPROXIMATED
 
 
-class RtkRosPublisher(Node):
-    def __init__(self, args: argparse.Namespace):
+# ── NTRIP client (background thread) ─────────────────────────────────────────
+
+class NtripClient:
+    def __init__(
+        self,
+        node: Node,
+        args: argparse.Namespace,
+        ser: "serial.Serial",
+        write_lock: threading.Lock,
+    ) -> None:
+        self.node = node
+        self.args = args
+        self.ser = ser
+        self.write_lock = write_lock
+        self._stop = threading.Event()
+        self._thread: Optional[threading.Thread] = None
+        self._gga: Optional[str] = None
+        self._gga_lock = threading.Lock()
+
+    def update_gga(self, raw_line: str) -> None:
+        with self._gga_lock:
+            self._gga = raw_line
+
+    def start(self) -> None:
+        self._thread = threading.Thread(target=self._run, name="ntrip", daemon=True)
+        self._thread.start()
+
+    def stop(self) -> None:
+        self._stop.set()
+        if self._thread:
+            self._thread.join(timeout=3.0)
+
+    def _run(self) -> None:
+        while not self._stop.is_set() and rclpy.ok():
+            try:
+                self._connect_and_stream()
+            except Exception as exc:
+                self.node.get_logger().warning(f"NTRIP disconnected: {exc}")
+            self._stop.wait(self.args.ntrip_reconnect_sec)
+
+    def _open_socket(self) -> socket.socket:
+        sock = socket.create_connection(
+            (self.args.ntrip_host, self.args.ntrip_port),
+            timeout=self.args.ntrip_connect_timeout,
+        )
+        if self.args.ntrip_tls:
+            ctx = ssl.create_default_context()
+            sock = ctx.wrap_socket(sock, server_hostname=self.args.ntrip_host)
+        return sock
+
+    def _http_request(self) -> bytes:
+        mp = self.args.ntrip_mountpoint.lstrip("/")
+        password = self.args.ntrip_password
+        if self.args.ntrip_password_env:
+            password = os.environ.get(self.args.ntrip_password_env, password)
+        token = base64.b64encode(f"{self.args.ntrip_user}:{password}".encode()).decode()
+        return (
+            f"GET /{mp} HTTP/1.0\r\n"
+            f"Host: {self.args.ntrip_host}:{self.args.ntrip_port}\r\n"
+            f"User-Agent: NTRIP rtk_ros_publisher/2.0\r\n"
+            f"Ntrip-Version: Ntrip/2.0\r\n"
+            f"Accept: */*\r\n"
+            f"Authorization: Basic {token}\r\n"
+            f"Connection: close\r\n\r\n"
+        ).encode("ascii")
+
+    def _read_header(self, sock: socket.socket) -> Tuple[str, bytes]:
+        data = b""
+        sock.settimeout(self.args.ntrip_response_timeout)
+        while b"\r\n\r\n" not in data:
+            chunk = sock.recv(4096)
+            if not chunk:
+                raise RuntimeError("caster closed before sending response header")
+            data += chunk
+            if len(data) > 16384:
+                raise RuntimeError("caster response header too large")
+        header, rest = data.split(b"\r\n\r\n", 1)
+        return header.decode("iso-8859-1", errors="replace"), rest
+
+    def _send_gga(self, sock: socket.socket) -> bool:
+        with self._gga_lock:
+            gga = self._gga
+        if gga is None and self.args.ntrip_gga:
+            gga = self.args.ntrip_gga
+        if gga is None:
+            return False
+        sock.sendall((gga.strip() + "\r\n").encode("ascii", errors="ignore"))
+        return True
+
+    def _connect_and_stream(self) -> None:
+        with self._open_socket() as sock:
+            sock.sendall(self._http_request())
+            header, initial_rtcm = self._read_header(sock)
+            first_line = header.splitlines()[0] if header else ""
+            if not (first_line.startswith("ICY 200") or " 200 " in first_line):
+                raise RuntimeError(first_line or "unexpected caster response")
+
+            self.node.get_logger().info(
+                f"NTRIP connected: {self.args.ntrip_host}:{self.args.ntrip_port}"
+                f"/{self.args.ntrip_mountpoint.lstrip('/')}"
+            )
+            sent = self._send_gga(sock)
+            if not sent:
+                self.node.get_logger().warning("NTRIP connected — waiting for first GGA to send position")
+            next_gga = time.monotonic() + (self.args.ntrip_gga_interval if sent else 1.0)
+
+            if initial_rtcm:
+                self._write_rtcm(initial_rtcm)
+
+            sock.settimeout(self.args.ntrip_read_timeout)
+            while not self._stop.is_set() and rclpy.ok():
+                now = time.monotonic()
+                if now >= next_gga:
+                    sent = self._send_gga(sock)
+                    next_gga = now + (self.args.ntrip_gga_interval if sent else 1.0)
+                try:
+                    data = sock.recv(4096)
+                except socket.timeout:
+                    continue
+                if not data:
+                    raise RuntimeError("caster closed connection")
+                self._write_rtcm(data)
+
+    def _write_rtcm(self, data: bytes) -> None:
+        with self.write_lock:
+            self.ser.write(data)
+
+
+# ── ROS 2 node ────────────────────────────────────────────────────────────────
+
+class RtkNode(Node):
+    def __init__(self, args: argparse.Namespace) -> None:
         super().__init__("rtk_ros_publisher")
         self.args = args
         self.fix_pub = self.create_publisher(NavSatFix, args.fix_topic, args.qos_depth)
-        self.latest_gst: Optional[GstStdDev] = None
-        self.ntrip_client: Optional[NtripClient] = None
+        self._latest_gst: Optional[GstStdDev] = None
+        self._ntrip: Optional[NtripClient] = None
 
-    def set_ntrip_client(self, ntrip_client: Optional[NtripClient]) -> None:
-        self.ntrip_client = ntrip_client
+    def set_ntrip(self, client: Optional[NtripClient]) -> None:
+        self._ntrip = client
 
-    def handle_sentence(self, sentence_type: str, fields: List[str], raw_line: str) -> None:
+    def handle_line(self, line: str) -> None:
+        # self.get_logger().info(line)
+        parsed = parse_sentence(line)
+        if parsed is None:
+            self.get_logger().debug(f"skipping invalid/unknown: {line}")
+            return
+        sentence_type, fields = parsed
         if sentence_type == "GGA":
-            if self.ntrip_client is not None:
-                self.ntrip_client.update_gga(raw_line)
+            if self._ntrip is not None:
+                self._ntrip.update_gga(line)
             fix = parse_gga(fields)
             if fix is not None:
-                self.publish_fix(fix)
+                self._publish(fix)
         elif sentence_type == "GST":
             gst = parse_gst(fields)
             if gst is not None:
-                self.latest_gst = gst
+                self._latest_gst = gst
 
-    def publish_fix(self, fix: GgaFix) -> None:
-        stamp = self.get_clock().now().to_msg()
-
+    def _publish(self, fix: GgaFix) -> None:
         msg = NavSatFix()
-        msg.header.stamp = stamp
+        msg.header.stamp = self.get_clock().now().to_msg()
         msg.header.frame_id = self.args.frame_id
-        msg.status.status = fix_quality_to_status(fix.fix_quality)
+        msg.status.status = fix_status(fix.fix_quality)
         msg.status.service = (
             NavSatStatus.SERVICE_GPS
             | NavSatStatus.SERVICE_GLONASS
@@ -370,125 +336,126 @@ class RtkRosPublisher(Node):
         msg.latitude = fix.latitude_deg
         msg.longitude = fix.longitude_deg
         msg.altitude = fix.altitude_m if fix.altitude_m is not None else math.nan
-        covariance, covariance_type = covariance_from_quality(
-            fix.fix_quality, fix.hdop, self.latest_gst
-        )
-        msg.position_covariance = covariance
-        msg.position_covariance_type = covariance_type
+        cov, cov_type = position_covariance(fix.fix_quality, fix.hdop, self._latest_gst)
+        msg.position_covariance = cov
+        msg.position_covariance_type = cov_type
         self.fix_pub.publish(msg)
-
         self.get_logger().info(
-            f"NavSatFix status={fix_quality_label(fix.fix_quality)} "
+            f"fix={fix_label(fix.fix_quality)} "
             f"lat={fix.latitude_deg:.8f} lon={fix.longitude_deg:.8f} "
-            f"satellites={fix.satellites} alt_m={msg.altitude:.3f}"
+            f"sats={fix.satellites} alt={msg.altitude:.2f}m"
         )
 
+
+# ── Serial read loop ──────────────────────────────────────────────────────────
+
+def read_loop(node: RtkNode, ser: "serial.Serial") -> None:
+    """Buffer bytes from serial and emit complete NMEA sentences to the node."""
+    buf = bytearray()
+    while rclpy.ok():
+        rclpy.spin_once(node, timeout_sec=0.0)
+
+        waiting = ser.in_waiting
+        if waiting:
+            buf.extend(ser.read(waiting))
+
+        # Extract all complete sentences ($....\r\n) from the buffer.
+        while True:
+            start = buf.find(b"$")
+            if start == -1:
+                buf.clear()
+                break
+            end = buf.find(b"\r\n", start)
+            if end == -1:
+                # Discard any garbage before the $ and wait for more data.
+                if start > 0:
+                    del buf[:start]
+                break
+            sentence_bytes = buf[start:end]
+            del buf[:end + 2]
+            try:
+                node.handle_line(sentence_bytes.decode("ascii", errors="replace"))
+            except Exception:
+                pass
+
+        if not waiting:
+            time.sleep(0.005)
+
+
+# ── Entry point ───────────────────────────────────────────────────────────────
 
 def parse_args(argv: List[str]) -> Tuple[argparse.Namespace, List[str]]:
-    parser = argparse.ArgumentParser(
-        description="Read WTRTK-960H NMEA over USB serial and publish ROS 2 topics."
-    )
-    parser.add_argument("--port", default="/dev/ttyACM0", help="USB serial device.")
-    parser.add_argument("--baudrate", type=int, default=115200, help="Serial baudrate.")
-    parser.add_argument("--timeout", type=float, default=0.1, help="Serial read timeout in seconds.")
-    parser.add_argument("--frame-id", default="rtk", help="ROS frame_id for GNSS messages.")
-    parser.add_argument("--fix-topic", default="/rtk/fix", help="sensor_msgs/NavSatFix topic.")
-    parser.add_argument("--qos-depth", type=int, default=20, help="Publisher queue depth.")
-    parser.add_argument("--ntrip-host", default="", help="NTRIP caster host. Empty disables NTRIP.")
-    parser.add_argument("--ntrip-port", type=int, default=2101, help="NTRIP caster port.")
-    parser.add_argument("--ntrip-mountpoint", default="", help="NTRIP mountpoint.")
-    parser.add_argument("--ntrip-user", default="", help="NTRIP username.")
-    parser.add_argument("--ntrip-password", default="", help="NTRIP password.")
-    parser.add_argument(
-        "--ntrip-password-env",
-        default="",
-        help="Read NTRIP password from this environment variable instead of the command line.",
-    )
-    parser.add_argument("--ntrip-tls", action="store_true", help="Use TLS for the NTRIP connection.")
-    parser.add_argument(
-        "--ntrip-gga",
-        default="",
-        help="Optional fixed GGA sentence to send to the caster until live GGA is available.",
-    )
-    parser.add_argument(
-        "--ntrip-gga-interval",
-        type=float,
-        default=10.0,
-        help="Seconds between GGA position updates sent to the caster.",
-    )
-    parser.add_argument(
-        "--ntrip-reconnect-sec",
-        type=float,
-        default=5.0,
-        help="Seconds to wait before reconnecting to the NTRIP caster.",
-    )
-    parser.add_argument(
-        "--ntrip-connect-timeout",
-        type=float,
-        default=10.0,
-        help="NTRIP TCP connect timeout in seconds.",
-    )
-    parser.add_argument(
-        "--ntrip-response-timeout",
-        type=float,
-        default=10.0,
-        help="Seconds to wait for the NTRIP caster response header after connecting.",
-    )
-    parser.add_argument(
-        "--ntrip-read-timeout",
-        type=float,
-        default=1.0,
-        help="RTCM socket read timeout after the NTRIP stream is connected.",
-    )
-    return parser.parse_known_args(argv)
+    p = argparse.ArgumentParser(description="RTK NMEA → ROS 2 NavSatFix publisher")
+    p.add_argument("--port",      default=os.environ.get("RTK_SERIAL_PORT", "/dev/ttyUSB0"),
+                   help="Serial device (env: RTK_SERIAL_PORT)")
+    p.add_argument("--baudrate",  type=int, default=int(os.environ.get("RTK_BAUDRATE", "115200")),
+                   help="Baud rate (env: RTK_BAUDRATE)")
+    p.add_argument("--frame-id",  default=os.environ.get("RTK_FRAME_ID", "rtk"),
+                   help="ROS frame_id (env: RTK_FRAME_ID)")
+    p.add_argument("--fix-topic", default=os.environ.get("RTK_FIX_TOPIC", "/rtk/fix"),
+                   help="NavSatFix topic (env: RTK_FIX_TOPIC)")
+    p.add_argument("--qos-depth", type=int, default=20)
+    p.add_argument("--init-cmd",  default="GPGGA 1\r\n",
+                   help="Command sent to GPS on open to enable NMEA output.")
+    # NTRIP
+    p.add_argument("--ntrip-host",       default=os.environ.get("NTRIP_HOST", ""),
+                   help="NTRIP caster host (env: NTRIP_HOST). Empty disables NTRIP.")
+    p.add_argument("--ntrip-port",       type=int, default=int(os.environ.get("NTRIP_PORT", "2101")),
+                   help="NTRIP caster port (env: NTRIP_PORT)")
+    p.add_argument("--ntrip-mountpoint", default=os.environ.get("NTRIP_MOUNTPOINT", ""),
+                   help="NTRIP mountpoint (env: NTRIP_MOUNTPOINT)")
+    p.add_argument("--ntrip-user",       default=os.environ.get("NTRIP_USER", ""),
+                   help="NTRIP username (env: NTRIP_USER)")
+    p.add_argument("--ntrip-password",   default=os.environ.get("NTRIP_PASSWORD", ""),
+                   help="NTRIP password (env: NTRIP_PASSWORD)")
+    p.add_argument("--ntrip-password-env", default="",
+                   help="Read NTRIP password from this env var instead of --ntrip-password.")
+    p.add_argument("--ntrip-tls",        action="store_true",
+                   default=os.environ.get("NTRIP_TLS", "").lower() == "true",
+                   help="Use TLS for NTRIP (env: NTRIP_TLS=true)")
+    p.add_argument("--ntrip-gga",        default="",
+                   help="Fixed GGA sentence to send until live GGA is available.")
+    p.add_argument("--ntrip-gga-interval",    type=float, default=10.0)
+    p.add_argument("--ntrip-reconnect-sec",   type=float, default=5.0)
+    p.add_argument("--ntrip-connect-timeout", type=float, default=10.0)
+    p.add_argument("--ntrip-response-timeout",type=float, default=10.0)
+    p.add_argument("--ntrip-read-timeout",    type=float, default=1.0)
+    return p.parse_known_args(argv)
 
 
 def main(argv: Optional[List[str]] = None) -> int:
     args, ros_args = parse_args(sys.argv[1:] if argv is None else argv)
     rclpy.init(args=[sys.argv[0]] + ros_args)
-    node = RtkRosPublisher(args)
-    ntrip_client = None
-
+    node = RtkNode(args)
+    ntrip = None
     try:
-        with serial.Serial(args.port, args.baudrate, timeout=args.timeout) as ser:
-            node.get_logger().info(
-                f"Reading WTRTK-960H NMEA from {args.port} at {args.baudrate} baud"
-            )
+        with serial.Serial(args.port, args.baudrate, timeout=1) as ser:
+            node.get_logger().info(f"Opened {args.port} at {args.baudrate} baud")
+
+            if args.init_cmd:
+                ser.write(args.init_cmd.encode("ascii"))
+                node.get_logger().info(f"Sent init command: {args.init_cmd.strip()!r}")
+                time.sleep(1.0)
+
             if args.ntrip_host:
                 if not args.ntrip_mountpoint:
                     node.get_logger().error("--ntrip-mountpoint is required when --ntrip-host is set")
                     return 2
-                if args.ntrip_password_env and args.ntrip_password_env not in os.environ:
-                    node.get_logger().error(
-                        f"--ntrip-password-env is set to '{args.ntrip_password_env}', "
-                        "but that environment variable does not exist"
-                    )
-                    return 2
-                serial_write_lock = threading.Lock()
-                ntrip_client = NtripClient(node, args, ser, serial_write_lock)
-                node.set_ntrip_client(ntrip_client)
-                ntrip_client.start()
-            while rclpy.ok():
-                rclpy.spin_once(node, timeout_sec=0.0)
-                raw = ser.readline()
-                if not raw:
-                    continue
-                line = raw.decode("ascii", errors="replace").strip()
-                node.get_logger().info(f"received: {line}")
-                parsed = split_nmea(line)
-                if parsed is None:
-                    node.get_logger().debug(f"Ignoring invalid NMEA: {line}")
-                    continue
-                sentence_type, fields = parsed
-                node.handle_sentence(sentence_type, fields, line)
+                write_lock = threading.Lock()
+                ntrip = NtripClient(node, args, ser, write_lock)
+                node.set_ntrip(ntrip)
+                ntrip.start()
+
+            read_loop(node, ser)
+
     except serial.SerialException as exc:
         node.get_logger().error(f"Serial error on {args.port}: {exc}")
         return 1
     except KeyboardInterrupt:
         pass
     finally:
-        if ntrip_client is not None:
-            ntrip_client.stop()
+        if ntrip is not None:
+            ntrip.stop()
         node.destroy_node()
         rclpy.shutdown()
     return 0
