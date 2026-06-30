@@ -481,15 +481,17 @@ INDEX_HTML = """<!doctype html>
       setMessage("Running " + path.replace("/api/", "") + "...");
       try {
         const data = await fetchJson(path, { method: "POST" });
-        setMessage(data.stdout || "Command finished.");
         if (outputTarget) {
           outputTarget.textContent = [data.stdout, data.stderr].filter(Boolean).join("\\n\\n") || "No output.";
           outputTarget.scrollTop = outputTarget.scrollHeight;
+        } else {
+          setMessage(data.stdout || "Command finished.");
         }
       } catch (error) {
-        setMessage(error.message, true);
         if (outputTarget) {
           outputTarget.textContent = error.message;
+        } else {
+          setMessage(error.message, true);
         }
       } finally {
         setActionState(false);
