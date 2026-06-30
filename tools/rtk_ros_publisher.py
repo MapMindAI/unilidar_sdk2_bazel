@@ -31,9 +31,10 @@ NTRIP_PASSWORD   = os.environ.get("NTRIP_PASSWORD",    "")
 NTRIP_MOUNTPOINT = os.environ.get("NTRIP_MOUNTPOINT",  "")
 
 def log(msg):
-    print(msg, flush=True)
+    # print(msg, flush=True)
+    return
 
-AskGGA = "GPGGA 1\r\n"
+AskGGA = "GPGGA 0.1\r\n"
 
 # ── Globals (same as reference) ───────────────────────────────────────────────
 sp             = None
@@ -166,7 +167,7 @@ def gps_ntrip_node():
     buffer = bytearray()
     wait_log_t = time.monotonic()
 
-    log("[phase1] waiting for first GGA sentence...")
+    node.get_logger().info("[phase1] waiting for first GGA sentence...")
     while rclpy.ok():
         rclpy.spin_once(node, timeout_sec=0.0)
         if sp.in_waiting > 0:
@@ -195,11 +196,11 @@ def gps_ntrip_node():
 
     # ── Phase 2: connect NTRIP (if configured) ────────────────────────────────
     if NTRIP_SERVER:
-        log(f"[phase2] connecting to NTRIP {NTRIP_SERVER}:{NTRIP_PORT} mount={NTRIP_MOUNTPOINT!r}")
+        node.get_logger().info(f"[phase2] connecting to NTRIP {NTRIP_SERVER}:{NTRIP_PORT} mount={NTRIP_MOUNTPOINT!r}")
         try:
             ntrip_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             ntrip_socket.connect((NTRIP_SERVER, NTRIP_PORT))
-            log("[phase2] TCP connected to NTRIP server, sending HTTP request")
+            node.get_logger().info("[phase2] TCP connected to NTRIP server, sending HTTP request")
 
             auth_str    = NTRIP_USERNAME + ":" + NTRIP_PASSWORD
             auth_base64 = base64.b64encode(auth_str.encode('utf-8')).decode('utf-8')
@@ -212,13 +213,11 @@ def gps_ntrip_node():
                 "\r\n"
             ) % (NTRIP_MOUNTPOINT, auth_base64)
             ntrip_socket.send(request.encode('utf-8'))
-            log("[phase2] NTRIP HTTP request sent, waiting for ICY 200 OK")
+            node.get_logger().info("[phase2] NTRIP HTTP request sent, waiting for ICY 200 OK")
         except Exception as e:
-            log(f"[phase2] ERROR: failed to connect to NTRIP: {e}")
             node.get_logger().error(f"Failed to connect to NTRIP server: {e}")
             ntrip_socket = None
     else:
-        log("[phase2] NTRIP_HOST not set — running without corrections")
         node.get_logger().info("NTRIP_HOST not set — running without NTRIP corrections")
 
     # ── Phase 3: main loop ────────────────────────────────────────────────────
@@ -226,8 +225,7 @@ def gps_ntrip_node():
     next_send_ntrip = time.monotonic() + 1.0
     buffer = bytearray()
     heartbeat_t = time.monotonic()
-    log("[phase3] entering main loop")
-    node.get_logger().info("Start main loop.")
+    node.get_logger().info("[phase3] entering main loop")
 
     while rclpy.ok():
         rclpy.spin_once(node, timeout_sec=0.0)
@@ -273,7 +271,6 @@ def gps_ntrip_node():
             except socket.timeout:
                 pass
             except Exception as e:
-                log(f"[ntrip] ERROR receiving RTCM: {e}")
                 node.get_logger().error(f"Error receiving RTCM data: {e}")
 
         if now - heartbeat_t >= 30.0:
