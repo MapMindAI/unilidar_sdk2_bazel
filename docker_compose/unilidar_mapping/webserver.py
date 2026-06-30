@@ -104,7 +104,7 @@ def rtk_start():
         cmd = [
             "bash",
             "-c",
-            f"source /opt/ros/humble/setup.bash && exec /usr/bin/python3 {RTK_PUBLISHER_SCRIPT}",
+            f"source ~/.bashrc && exec /usr/bin/python3 {RTK_PUBLISHER_SCRIPT}",
         ]
         with _rtk_log_lock:
             _rtk_log_buf.clear()
