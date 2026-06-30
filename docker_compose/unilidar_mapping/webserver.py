@@ -106,6 +106,7 @@ def rtk_start():
             "bash",
             "-c",
             f"[ -r {env_file} ] && {{ set -a; . {env_file}; set +a; }}; "
+            f"chmod 777 /dev/ttyUSB0 && "
             f"source /opt/ros/jazzy/setup.bash && "
             f"exec /usr/bin/python3 {RTK_PUBLISHER_SCRIPT}",
         ]
