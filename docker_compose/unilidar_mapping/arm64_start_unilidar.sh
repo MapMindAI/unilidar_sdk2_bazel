@@ -33,6 +33,10 @@ if [[ ! -f "${COMPOSE_FILE_PATH}" ]]; then
   exit 1
 fi
 
+if [[ -e "${RTK_SERIAL_PORT:-/dev/ttyUSB0}" ]]; then
+  chmod 777 "${RTK_SERIAL_PORT:-/dev/ttyUSB0}"
+fi
+
 docker compose \
   -p "${COMPOSE_PROJECT_NAME}" \
   -f "${COMPOSE_FILE_PATH}" \
