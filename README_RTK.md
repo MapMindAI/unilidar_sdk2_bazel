@@ -241,6 +241,9 @@ ls /dev/ttyACM* /dev/ttyUSB*
 
 An interactive map viewer is included at [`web/rtk_viewer.html`](web/rtk_viewer.html).
 
+<img width="1117" height="514" alt="screenshot-20260701-154516" src="https://github.com/user-attachments/assets/7ccb1a38-094d-4215-8de0-b86182417938" />
+
+
 **Features:**
 - Parses the raw `.txt` log format directly in the browser (no server required for manual load)
 - OpenStreetMap and Esri Satellite tile layers; upscales tiles beyond native zoom instead of showing "data not available"
