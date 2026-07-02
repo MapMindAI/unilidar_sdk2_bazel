@@ -1,10 +1,12 @@
 # Unitree Lidar Collector
 
-![raw top](assets/mapping.png)
+![raw top](assets/mapping.jpg)
 
 * RK3566 for data collection.
 * UniLidar L2 for pointcloud.
 * 3D print box : https://www.tinkercad.com/things/cM7BuANyys1-unilidar-box
+
+![rtk_fused_mapping](assets/rtk_fused_mapping.gif)
 
 ## How to use
 

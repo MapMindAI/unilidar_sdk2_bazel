@@ -25,7 +25,8 @@ services:
         done
         source /opt/ros/humble/setup.bash
         export LD_LIBRARY_PATH="/opt/ros/humble/lib:/opt/ros/humble/lib/x86_64-linux-gnu:${LD_LIBRARY_PATH:-}"
-        exec /unilidar_sdk2_bazel/docker_compose/unitree_lidar_sdk/unitree_lidar_rosnode --logtostderr=1 --stop_rotate_after_quit=true --cloud_accumulate_rings=25 --alpha_bais_bias=-0.014 --range_fix_a0=0 --range_fix_a1=0
+        exec /unilidar_sdk2_bazel/docker_compose/unitree_lidar_sdk/unitree_lidar_rosnode --logtostderr=1 --stop_rotate_after_quit=true \
+        --cloud_accumulate_rings=25 --alpha_bais_bias=-0.01 --range_fix_a0=0 --range_fix_a1=0
 
   recorder:
     image: yeliudm/arm64-ros2humble-opencv4.8.1:latest
@@ -59,7 +60,9 @@ services:
         echo "Save to $${BAG_NAME}"
         exec ros2 bag record -o "/unilidar_sdk2_bazel/data/rosbags/$${BAG_NAME}" \
         --max-cache-size 2147483648 \
-        /unilidar/imu /unilidar/cloud /rtk/fix /camera/camera/depth/image_rect_raw /camera/camera/infra1/camera_info /camera/camera/infra1/image_rect_raw /camera/camera/infra2/camera_info  /camera/camera/infra2/image_rect_raw /camera/camera/vio_20hz
+        /unilidar/imu /unilidar/cloud /rtk/fix \
+        /camera/camera/depth/image_rect_raw /camera/camera/infra1/camera_info /camera/camera/infra1/image_rect_raw \
+        /camera/camera/infra2/camera_info  /camera/camera/infra2/image_rect_raw /camera/camera/vio_20hz
 
   rtk_publisher:
     image: yeliudm/arm64-ros2humble-opencv4.8.1-rtk:latest
